@@ -1,0 +1,1390 @@
+"""
+EQRM2a1.py
+
+Purpose:
+    Code for the first assignment of EQRM 2
+
+Version:
+    1       Starting on question 1
+    2       Working on log return plots and simulating data
+    3       Create discriptive statistics function
+    4       Create ACF plotst
+    10      Removes code for multivariate MLE (is still in v9)
+
+Date:
+    2021/11/09
+
+Author:
+    Dennis Cordes   2638370
+    Sander Tromp    2634741
+    Qingdong Wang   2721963
+"""
+###########################################################
+### Imports
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import os
+import statistics
+import math
+import sympy
+import scipy.stats as st
+import scipy.optimize as opt
+from statsmodels.tsa.arima.model import ARIMA
+
+### Get hessian and related functions
+from grad import *
+
+
+###########################################################
+### readData(sFileName)
+def readData(sFileName):
+    """
+    Purpose:  
+        Loading in data for .xlsx file
+        
+    Inputs:
+        sFileName       String, contains name of .txt file
+        
+    Return values
+        dfPrices        8074 x 4 dataframe containing closing prices
+    
+    """
+    dfPrices = pd.read_excel(sFileName)
+    
+    return dfPrices
+
+###########################################################
+### PlotGraph(dfPrices)
+def PlotGraph(mY, vX, lStrings, mZ, bool4):
+    """
+    Purpose:  
+        Create a 2 x 2 graph plot, where the fourth plot is optional
+        
+    Inputs:
+        mY              Matrix, requires at least 3 columns
+        vX              Vector, should be of equal length as columns of mY
+        lStrings        A list of strings with the following order:
+                        0) First plot name 1) Second plot name 2) Third plot name
+                        3) x-label 4) y-label for first three plots
+                        5) figure name 6) fourth plot name 7) fourth plot
+                        first line name 8) fourth plot second line name 
+        mZ              Matrix, requires at least 2 columns.
+        bool4           Boolean, if ==True activates fourth plot
+        
+    """
+    
+    fig, ax = plt.subplots(2, 2, figsize=(15,10))
+    ax[0,0].plot(vX, mY[:,0])
+    ax[0,0].title.set_text(lStrings[0])
+    ax[0,0].set_xlabel(lStrings[3])
+    ax[0,0].set_ylabel(lStrings[4])
+    
+    ax[0,1].plot(vX, mY[:,1])
+    ax[0,1].title.set_text(lStrings[1])
+    ax[0,1].set_xlabel(lStrings[3])
+    ax[0,1].set_ylabel(lStrings[4])
+    
+    ax[1,0].plot(vX, mY[:,2])
+    ax[1,0].title.set_text(lStrings[2])
+    ax[1,0].set_xlabel(lStrings[3])
+    ax[1,0].set_ylabel(lStrings[4])
+    
+    if bool4 == True:
+        ax[1,1].plot(vX, mZ[:,1], label=lStrings[7])
+        ax[1,1].plot(vX, mZ[:,0], label=lStrings[8])
+        ax[1,1].title.set_text(lStrings[6])
+        ax[1,1].set_xlabel(lStrings[3])
+        ax[1,1].legend()
+    
+    fig.savefig(lStrings[5])
+    fig.show()
+    
+    return
+
+###########################################################
+### PlotGraph(dfPrices)
+def PlotBar(mY, vX, lStrings):
+    """
+    Purpose:  
+        Create a 2 x 2 graph with barplot
+        
+    Inputs:
+        mY              Matrix, requires at least 3 columns
+        vX              Vector, should be of equal length as columns of mY
+        lStrings        A list of strings with the following order:
+                        0) First plot name 1) Second plot name 2) Third plot name
+                        3) x-label 4) y-label for first three plots
+                        5) figure name   
+    """
+    
+    fig, ax = plt.subplots(2, 2, figsize=(15,10))
+    ax[0,0].bar(vX, mY[:,0])
+    ax[0,0].title.set_text(lStrings[0])
+    ax[0,0].set_xlabel(lStrings[3])
+    ax[0,0].set_ylabel(lStrings[4])
+    
+    ax[0,1].bar(vX, mY[:,1])
+    ax[0,1].title.set_text(lStrings[1])
+    ax[0,1].set_xlabel(lStrings[3])
+    ax[0,1].set_ylabel(lStrings[4])
+    
+    ax[1,0].bar(vX, mY[:,2])
+    ax[1,0].title.set_text(lStrings[2])
+    ax[1,0].set_xlabel(lStrings[3])
+    ax[1,0].set_ylabel(lStrings[4])
+        
+    fig.savefig(lStrings[5])
+    fig.show()
+    
+    return
+
+###########################################################
+### TakeLogs(dfPrices)
+def TakeLogs(dfPrices):
+    """
+    Purpose:  
+        Changes dataframe to various numpy arrays and create a matrix with
+        log prices and one with log returns
+        
+    Inputs:
+        dfPrices        5336 x 4 dataframe containing closing prices
+
+    Return values:
+        mPrice          5336 x 3 matrix containing closing prices
+        mLogPrice       5336 x 3 matrix containing log closing prices
+        mLogRet         5335 x 3 matrix containing log returns
+        vDates          5336 x 1 vector containing dates        
+    """
+    (iN, iK) = dfPrices.shape
+    vDates = np.array(dfPrices['Day'])
+    
+    mPrice = np.array(dfPrices.iloc[:,1:iK])
+    mLogPrice = np.zeros_like(mPrice)        
+    for i in range(3):
+        mLogPrice[:,i] = np.log(mPrice[:,i])
+    
+    mLogRet = np.zeros((iN-1, iK-1)) 
+    for i in range(3):
+        mLogRet[:,i] = np.diff(mLogPrice[:,i])
+
+    mPriceH1 = mPrice[:3023,:]
+    mLogPriceH1 = mLogPrice[:3023,:]
+    mLogRetH1 = mLogRet[:3023,:]
+    vDatesH1 = vDates[:3023]
+    
+    return (mPrice, mLogPrice, mLogRet, vDates, 
+            mPriceH1, mLogPriceH1, mLogRetH1, vDatesH1)
+
+###########################################################
+### estpathslog(msimsL, dLastPrice, dMu, dSig)
+def SimData(mLogRet, iDF):
+    """
+    Purpose:  
+        Create two vectors containing simulated data using the Gaussian
+        and Student's T-distribution with 4 degrees of freedom
+        
+    Inputs:
+        mLogRet         5335 x 3 matrix containing log returns
+        iDF             integer, degrees of freedom of T-distribution
+
+    Return values:
+        mSim            5335 x 2 matrix, first column has IID Gaussian simulations,
+                        second column has IID Student-t simulations
+    """
+    (iN,iK) = mLogRet.shape
+    
+    mSim = np.zeros((iN,2))
+    mSim[:,0] = np.random.randn(iN)
+    mSim[:,1] = np.random.standard_t(iDF, iN)
+    
+    return mSim
+
+###########################################################
+### DescriptiveStats(mLogRet) = mStats
+def DescriptiveStats(mLogRet):
+    """
+    Purpose:  
+        Provide descriptive statistics for the three series of log returns
+        
+    Inputs:
+        mLogRet         5335 x 3 matrix containing log returns
+
+    Return values:
+        mStats          9 x 4 matrix, first column values are category names
+    """
+    lStats = ['num obs', 'mean', 'median', 'stdev', 'skew', 'kurt', 'min', 'max']
+    iN, iK = mLogRet.shape
+    
+    mStats = np.zeros((len(lStats)+1, iK+1), dtype=object)
+    mStats[:] = np.nan
+    mStats[1:,0] = lStats
+    mStats[0,:] = ['Index', 'DJIA', 'N255', 'SSMI']
+    
+    for i in range(iK):
+        mStats[1,i+1] = len(mLogRet[:,i])
+        mStats[2,i+1] = np.mean(mLogRet[:,i])
+        mStats[3,i+1] = np.median(mLogRet[:,i])
+        mStats[4,i+1] = np.std(mLogRet[:,i])
+        mStats[5,i+1] = st.skew(mLogRet[:,i])
+        mStats[6,i+1] = st.kurtosis(mLogRet[:,i], fisher=False)
+        mStats[7,i+1] = np.min(mLogRet[:,i])
+        mStats[8,i+1] = np.max(mLogRet[:,i])
+
+    return mStats
+
+###########################################################
+### ACF(mLogRet, iLags, mStats, boolAbs) = mAutoCORR
+def ACF(mLogRet, iLags, mStats, boolAbs):
+    """
+    Purpose:
+        Calculate an ACF for iLags amount of lags. The boolean input parameter
+        decides whether the absolute values of a series must be used.
+
+    Inputs:
+        mLogRet         matrix, filled with columns of log returns
+        iLags           integer, number of lags 
+        mStats          matrix, filled with stats about 3 log return columns
+        boolAbs         boolean, True when using absolute log returns and
+                        false otherwise
+                        
+    Return values:
+        mAutoCorr       iLags+1 x iK matrix, contains autocorrelations per column
+    """
+    iN, iK = mLogRet.shape
+    mAutoCov = np.zeros((iLags+1, iK))
+    mAutoCorr = np.zeros((iLags+1, iK))
+    
+    if boolAbs == True:
+         mLogRet = np.abs(mLogRet)     
+    vMean = np.mean(mLogRet, axis=0)
+    
+    for i in range(iK):
+        vDemeaned = mLogRet[:,i]-vMean[i]
+        for k in range(iLags+1):
+            mAutoCov[k,i] = (1/iN)*(vDemeaned.T[k:iN] @ vDemeaned[:iN-k])
+            mAutoCorr[k,i] = mAutoCov[k,i] / mAutoCov[0,i]
+
+    return mAutoCorr, mAutoCov
+
+###########################################################
+### PACF(mYfull, iLags, boolAbs)
+def PACF(mYfull, iLags, boolAbs):
+    """
+    Purpose:
+        Calculate a PACF for iLags number of lags. The boolean input parameter
+        decides whether the absolute values of a series must be used.
+
+    Inputs:
+        mYfull          Matrix of time series in different columns
+        iLags           integer, number of lags to be used in PACF function             
+        boolAbs         boolean, True when using absolute log returns and
+                        false otherwise
+                        
+    Return values:
+        mPACF           (iLags + 1) x iK matrix, first value for each series is 0
+    """
+    (iN,iK) = mYfull.shape
+    mPACF = np.zeros((iLags+1,iK))
+                
+    if boolAbs == True:
+        mYfull = np.abs(mYfull)
+            
+    for i in range(iK):
+        for n in range(1,iLags+1):
+            (mX, vY) = CreateX_Y(n, 0, mYfull[:,i])
+            XtXi = np.linalg.inv(mX.T @ mX)
+            vB = XtXi @ mX.T @ vY
+            mPACF[n, i] = vB[-1]
+            
+    return mPACF
+
+###########################################################
+### LBtest(mLogRet, iLags, mStats) = vTestStat
+def LBtest(mLogRet, iLags, mStats):
+    """
+    Purpose:
+        Perform Ljung-Box test by calculating sample autocorrelations and using
+        formula for the test as described in the lecture slides.
+        True if null hypothesis is not rejected. No autocorrelation
+        False if null hypothesis is rejected. Autocorrelation
+
+    Inputs:
+        mLogRet         matrix, filled with columns of log returns
+        iLags           integer, number of lags 
+        mStats          matrix, filled with stats about 3 log return columns
+        
+    Return values:
+        vTestStat       1 x iK vector, Ljung-Box test-statistic for each index 
+        vTestBool       1 x iK vector, Ljung-Box test boolean.
+    """
+    iN, iK = mLogRet.shape
+    (mAutoCorr, mAutoCov) = ACF(mLogRet, iLags, mStats, False)
+    vRhoSums = np.zeros((1, iK))
+    vTestStat = np.zeros((1, iK))
+    vTestBool = np.ones((1,iK), dtype=bool)
+    crit = st.chi2.ppf(0.95,iLags)
+    
+    for i in range(iK):
+        for k in range(1,iLags+1):
+            vRhoSums[0,i] += (np.square(mAutoCorr[k,i]))/(iN-k)
+        vTestStat[0,i] = iN*(iN+2)*vRhoSums[0,i]
+        if vTestStat[0,i] > crit:
+            vTestBool[0,i] = False
+
+    return (vTestStat, vTestBool)
+
+###########################################################
+### JBtest(vY)
+def JBtest(vY):
+    """
+    Purpose:
+        Perform Jarque-Bera test to test for normality of the given input data.
+        True if null hypothesis is not rejected. Data is normally distributed
+        False if null hypothesis is rejected. Data is not normally distributed
+    Inputs:
+        vY              Vector, input data to test normality for
+        
+    Return values:
+        dTest           Double, Test statistic of the JB test
+        bTest           Bool, True if null hypothesis is not rejected
+                             False if null hypothesis is rejected
+    """
+    iN = len(vY)
+    skewness = st.skew(vY)
+    kurtosis = st.kurtosis(vY, fisher=False)
+    dTest = (iN/6)*(skewness ** 2 + ((kurtosis - 3) ** 2)/4)
+    bTest = True
+    
+    crit = st.chi2.ppf(0.95,2)
+    if dTest > crit:
+        bTest = False
+
+    return dTest, bTest
+
+###########################################################
+### PlotGraph(dfPrices)
+def DickeyFuller(mLogPrice, mLogRet):
+    """
+    Purpose:  
+        Computing the Dickey-Fuller test statistic for various time series,
+        where we output 3 dimensional matrix with test statistics. It computes
+        the statistics for any combination of intercept and drift term, which
+        results in 4 different models. We thus calculate 4 models per time series
+        and do this for both log prices and log returns
+        
+    Inputs:
+        mLogPrice       iN x iK matrix of log prices
+        mLogRet        (iN - 1) x iK matrix of log returns
+        
+    Return values
+        mDFstats        (4 x iK x 2) matrix, where the first dimension denotes
+                        the various models used. These are:
+                            0) 
+                            1) + intercept
+                            2) + drift
+                            3) + intercept + drift
+                        The next axis incudes the 3 models and the final dimension
+                        differentiates bettween log prices and log returns.
+    
+    """
+    iN, iK = mLogPrice.shape    
+    vBoolDF = [[True, False, False], [True, True, False], 
+               [True, False, True], [True, True, True]]
+    mDFstats = np.zeros((len(vBoolDF), iK, 2))
+    mFull = [mLogPrice, mLogRet]
+    for q,mY in enumerate(mFull):
+        for b in range(len(vBoolDF)):
+            for i in range(iK):
+                mX, vY = CreateX_Y(1, 0, mY[:,i], vBoolDF[b])
+                XtXi = np.linalg.inv(mX.T @ mX)
+                vB = XtXi @ mX.T @ vY
+                vE = vY - mX @ vB                               # Compute vector of residuals
+                dS2 = 1 / (iN - iK) * vE.T @ vE                 # Compute variance of the residuals at the mean
+                mS2 = dS2 * np.linalg.inv(mX.T @ mX)            # Compute covariance matrix of the parameters at the mean
+                vSE = np.sqrt(np.diagonal(mS2))                 # Compute standard errors / standard deviations at the mean        
+                mDFstats[b,i,q] = (vB[-1]-1)/vSE[-1]
+
+    return mDFstats
+
+###########################################################
+### dY= emptyfunc(vX)
+def CreateX_Y(iAR, iMA, vY, vBool = [False, False, False]):
+    """
+    Purpose:
+        Create mX and vY for maximum likelihood estimation depending on the amount
+        of AR coefficients, with a special case for creating the mX for the Dickey-
+        Fuller test. It checks whether the first boolean is true, which means
+        that we're dealing with the DF-case. The second boolean checks whether
+        there should be an intercept and the third boolean checks whether a
+        trend should be included. All combinations of trend and intercept are
+        possible.
+        In the DF-case, mX is structured as follows:
+            [0] Intercept
+            [1] Drift
+            [2] Lagged value of Y
+        
+    Inputs:
+        iAR             Integer, number of AR lags (p)
+        iMA             Integer, number of MA lags (q)
+        vY              iN x iK matrix of log returns
+        vBool           A vector of booleans, only contains true values when
+                        estimating the Dickey-Fuller test statistic. For more
+                        information, see the DickeyFuller() function.
+        
+    Return values:
+        mXtrunc         (iN - max(p,q)) x iK matrix containing truncated lagged log returns
+        vYtrunc         (iN - max(p,q)) x 1 vector containing truncated log returns
+    """
+    (iN) = len(vY)
+    if vBool[0] == False:
+        mX = np.zeros((iN,iAR+iMA+1))
+        for i in range(iAR-1,-1,-1):
+            vFull = np.zeros((iN))
+            vFull[:len(vY[i:])] = vY[i:]
+            mX[:,(iAR-i)] = vFull
+        mXtrunc = mX[:(iN-iAR),:]
+        mXtrunc[:,0] = 1
+        vYtrunc = vY[iAR:]
+                    
+    if vBool[0] == True:
+        mX = np.zeros((iN-1, 3))
+        mX[:,0] = 1
+        mX[:,1] = range(0,(iN-1))
+        mX[:,2] = vY[:-1]
+        if vBool[1] == False:
+            if vBool[2] == False:
+                mX = mX[:,2:]
+            else:
+                mX = mX[:,1:]
+        elif vBool[2] == False:
+            mX = mX[:,[0,2]]  
+        mXtrunc = mX[:(iN-iAR),:]
+        vYtrunc = vY[iAR:]
+
+    return (mXtrunc, vYtrunc)
+
+###########################################################
+### (mS2, mS2hd) = ComputeMLvariance(vP, vY, mX, AvgNLnLRegr)  
+def ComputeMLvariance(vP, vY, mX, AvgNLnLRegr, iAR, iMA):
+    """
+    Purpose:
+        To compute the variance of the maximum likelihood
+        
+
+    Inputs:
+        vP              iK+1 Vector, of optimal parameters | sigma
+        vY              iN vector of dependent oberservations
+        mX              iN x iK matrix of regressors
+        AvgNLnlRegr     Lambda function to calculate average Log-Likelihood
+        iAR             integer, number of AR lags
+        iMA             integer, number of MA lags
+
+    Return value:
+        mS2             Matrix, Non-robust covariance
+        mShd            Matrix, Robust covariance
+    """
+    
+    (iN, iK)= mX.shape
+    
+    # Obtain Hessian & Jacobian
+    mA= -hessian_2sided(AvgNLnLRegr, vP)    # Asymptotic E(H), adapt for negative LL
+    mAi= np.linalg.inv(mA)
+    
+    mG= jacobian_2sided(LnLRegr, vP, vY, mX, iAR, iMA)
+    mB = mG.T @ mG / iN                     # E[gg']
+
+    # Get standard errors, Non-Robust
+    mS2= -mAi/iN                            # Non-robust covariance
+    # vSh= np.sqrt(np.diag(mS2))            # Non-robust standard deviations
+    
+    # Get standard errors, Robust
+    mS2hd = (-mAi) @ mB @ (-mAi) / iN       # Robust covariance matrix
+    vShd= np.sqrt(np.diag(mS2hd))         # Robust standard deviations
+    print('Standard Errors:\n',vShd)
+    return (mS2, mS2hd)
+
+
+###########################################################
+### vLL= LnLRegr(vP, vY, mX)
+def LnLRegr(vP, vY, mX, iAR, iMA):
+    """
+    Purpose:
+        To compute vector loglikelihood of regression model.
+        Assuming the disturbances are normally distributed
+        
+
+    Inputs:
+        vP      2 + iAR + iMA x 1 vector with iK parameters + intercept + sigma
+                Mu | AR parameters | MA parameters | sigma (volatility)
+        vY      iN vector of dependent oberservations
+        mX      iN x (iAR + 1) matrix of regressors
+        iAR     integer, number of AR parameters
+        iMA     integer, number of MA parameters
+
+    Return value:
+        vLL     iN vector, loglikelihood
+    """
+    # Initialisation
+    (iN, iK)= mX.shape
+    vB = vP[0:1+iAR+iMA]
+    dSigma= vP[-1]
+    
+    #Making sure the sizes are correct
+    vB = np.reshape(vB, (-1,1))
+    vY = np.reshape(vY, (-1,1))
+    
+    # Estimation    
+    vE = np.zeros_like(vY)
+    for i in range(iN):
+        for n in range(iMA):
+            if i>n:
+                mX[i,1+iAR+n] = vE[i-(n+1)]
+        vE[i] = vY[i] - mX[i,:]@vB
+    vLL= -0.5*(np.log(2*np.pi * np.square(dSigma)) + np.square(vE/dSigma))
+    # print (".")     # Give sign of life
+    vLL = vLL.reshape(iN) # Reshape into 1D vector to ensure that the Jacobian function works
+
+    return vLL
+
+###########################################################
+### BindSigma= LnLRegr(vP, vY, mX)
+def BindSigma(vP):
+    """
+    Purpose:
+        To bind sigma to values between 0 and 1
+            
+    Input:
+        vP      Vector of parameters
+        
+    Returns:
+        value   bounded sigma
+
+    """   
+    value =1- vP[-1]
+    return value
+
+###########################################################
+### (vP, mS2, mS2hd, dLL, dAIC, dAICc, dBIC, mX, bSuccess)= EstimateRegrNorm(vYfull, iAR, iMA)
+def EstimateRegrNorm(vYfull, iAR, iMA, bPrint=True):
+    """
+    Purpose:
+        To estimate the vB of the regression using maximum likelihood.
+        Assuming the disturbances are normally distributed
+            
+    Input:
+        vYfull      Vector, dependent variables of the regression
+        iAR         Integer, AR lags in the model
+        iMA         Integer, MA lags in the model
+        bPrint      Boolean, True for printing diagnostics. else input False
+        
+    Returns:
+        vP          2 + iAR + iMA x 1 vector with iK parameters + intercept + sigma
+                    Mu | AR parameters | MA parameters | sigma (volatility)
+        mS2         Matrix, Non-robust covariance
+        mShd        Matrix, Robust covariance
+        dLL         double, log likelihood value
+        dAIC        double, AIC value
+        dAICc       double, AIC-corrected value
+        dBIC        double, BIC value
+        mX          (iN - max(p,q)) x iK matrix containing truncated lagged log returns
+        bSuccess    boolean, true when optimization is succesful, false otherwise
+    """
+    # Create mX and vY with correct length
+    (mX, vY) = CreateX_Y(iAR, iMA, vYfull)
+    (iN,iK) = mX.shape
+    
+    # Create "bad" starting values
+    vP0= np.ones(2 + iAR + iMA)
+    iSize = iAR + iMA
+    for i in range(iSize):
+        vP0[1+i] = 0.18
+    vP0[0] = 0.001
+    vP0[-1] = 0.01
+        
+    # Calculate the average negative log likelihood function
+    AvgNLnLRegr= lambda vP: -np.mean(LnLRegr(vP, vY, mX, iAR, iMA), axis=0)
+    
+    res = opt.minimize(AvgNLnLRegr, vP0, method="SLSQP", options={'maxiter':200}, constraints={'type': 'ineq','fun': BindSigma})
+    # res = opt.minimize(AvgNLnLRegr, vP0, method="BFGS")
+    
+    vP = np.array(res.x)
+    bSuccess = res.success
+    
+    dLL =  -np.sum(LnLRegr(vP, vY, mX, iAR, iMA), axis=0)
+    
+    # Compute covariance matrix
+    (mS2, mS2hd) = ComputeMLvariance(vP, vY, mX, AvgNLnLRegr, iAR, iMA)
+    # Compute model selection criteria
+    (dAIC,dAICc,dBIC,dTest,bTest, dLBtest, bLBbool) = Model_select(iAR,iMA,vP,mX,vY)
+    
+    if bPrint == True:
+        print(res)
+        print("Optimal set of parameters: \n", vP)
+        print("Log-likelihood value: ",dLL)
+        print("Covariance matrix of the ML estimator: \n", mS2hd)
+        print('AIC: ', dAIC)
+        print('AICc: ', dAICc)
+        print('BIC: ', dBIC)
+        print('\n Residual testing: ')
+        print('Jarque-Bera test statistic: ',dTest,"Reject or accept null: ",bTest)
+        print('Ljung-Box test statistic: ',dLBtest, 'Rejectt or accept null: ',bLBbool)
+    
+    return (vP, mS2, mS2hd, dLL, dAIC, dAICc, dBIC, mX, bSuccess)
+
+###########################################################
+### SimARMA(iAR, iMA, isimSigma, iN, vB)
+def SimARMA(iAR, iMA, isimSigma, iN, vB):
+    """
+    Purpose:
+        To simulate a ARMA timeseries to check our ML estimator
+            
+            
+    Input:
+        iAR         Integer, number of AR lags in the timeseries
+        iMA         Integer, number of MA lags in the timeseries
+        isimSigma   Integer, variance of the timeseries
+        iN          Integer, desired number of observations in the timeseries
+        vB          Vector, ARMA parameter values
+        
+    Returns:
+        vY          Vector, containing the ARMA timeseries
+    """
+    # iK = 1+iAR+iMA
+    # mX = np.ones((iN,iK))
+    vE = np.random.randn(iN,1) * isimSigma
+    vY = np.zeros((iN,1))
+    vY[0:iAR+1,:] = vB[0] + vE[0:iAR+1]
+    vB = np.reshape(vB, (-1,1))
+    vY = np.reshape(vY, (-1,1))
+    
+    if iMA != 0:
+        for n in range(max(iAR,iMA)+1,iN):
+            vY[n] = vB[0] + vY[n-iAR:n].T @ vB[1:iAR+1] + vE[n] + vE[n-iMA:n].T @ vB[iAR+1:]
+    if iMA == 0:
+        for n in range(iAR+1,iN):
+            vY[n] = vB[0] + vY[n-iAR:n].T @ vB[1:iAR+1] + vE[n]
+        
+    vY = np.squeeze(vY,1)
+        
+    return vY
+
+###########################################################
+### FullEst(iAR,iMA,vY)
+def FullEst(iAR,iMA,vY):
+    """
+    Purpose:
+        To simulate all the combinations of the ARMA models, dependent of the AR and MA lags
+            
+            
+    Input:
+        iAR         Integer, number of AR lags in the timeseries
+        iMA         Integer, number of MA lags in the timeseries
+        vY          Vector, Containing the dependent variable
+        
+    Returns:
+        mPs         (iAR x iMA) x (1 + iAR + iMA + sigma) vector of optimal parameters
+    """
+    mPs = []
+    for ar in range(1,iAR+1):
+        for ma in range(iMA+1):
+            print("Estimating model using: AR lags: ",ar,'MA lags: ',ma)
+            (vP, mS2, mS2hd, dLL, dAIC, dAICc, dBIC, mX, bSuccess) = EstimateRegrNorm(vY, ar, ma)
+            mPs.append(vP)
+            
+    return mPs
+
+###########################################################
+### Forecast(vY, iAR,iMA, iH, iStart, bPrint)
+def ForecastREAL(vY, iAR,iMA, iH, iStart, bPrint=True):
+    """
+    Purpose:
+        To create h step ahead forecasts. For a ARMA model defined by input parameters
+        
+    Input:
+        vY          Vector, of dependent variables
+        iAR         Integer, AR lags in the model
+        iMA         Integer, MA lags in the model
+        iH          Integer, number of h-step ahead forecast
+        iStart      Integer, Indicating the starting value of the out of sample estimation
+        bPrint      Boolean, True if diagnostics are printed. False for not printing. Usually faster to disable.
+    
+    Returns:
+        mForecast   Matrix, containing the h-step ahead forecasts
+        bSuccess    Boolean, true if iteration was succesful
+    """
+    
+    #Initialisation
+    iN = len(vY)
+    iFCsize = iN-iStart-iH
+    mForecast = np.zeros((iFCsize,iH))
+    
+    (vP, mS2, mS2hd, dLL, dAIC, dAICc, dBIC, mX, bSuccess)= EstimateRegrNorm(vY[:iStart], iAR, iMA,bPrint)
+    
+    mXnew = np.zeros((iH+1,1+iAR+iMA))
+    mXnew[0,:] = mX[-1,:]
+    mXnew[:,0] = 1
+    
+    vB = vP[0:1+iAR+iMA]
+    
+    # Estimation
+    for Fc in range(iFCsize):
+        dE = vY[Fc + iStart-1] - mXnew[0,:].T @ vB        # Calculate new residual
+        for ar in range(0,iAR):
+            mXnew[0,1+ar] = vY[(iStart-1)-ar+Fc]
+        for ma in range(1,iMA):
+            mXnew[0,iAR + 1 + ma] = mXnew[0,iAR + ma]
+        if iMA != 0:
+            mXnew[0,1+iAR] = dE
+        
+        for h in range(iH):
+            mForecast[Fc,h] = mXnew[h,:].T @ vB
+            mXnew[h+1,1] = mForecast[Fc,h]
+            for ar in range(1,iAR):
+                mXnew[1+h,1+ar] = mXnew[h,ar]
+            for ma in range(1,iMA):
+                mXnew[1+h,1+iAR+ma] = mXnew[h,iAR+ma]
+        
+    return mForecast, bSuccess
+
+###########################################################
+### Storecast(vY, iAR,iMA, iH, iStart, bPrint)
+def Storecast(vY, iAR,iMA, iH, iStart, bPrint=True):
+    """
+    Purpose:
+        Calculating the forecasts and prediction errors for multiple models
+        and stores them into a 3-dimensional np.array.
+        
+    Inputs:
+        vY          Vector, of dependent variables
+        iAR         Integer, AR lags in the model
+        iMA         Integer, MA lags in the model
+        iH          Integer, number of h-step ahead forecast
+        iStart      Integer, Indicating the starting value of the out of sample estimation
+        bPrint      Boolean, True if diagnostics are printed. False for not printing. Usually faster to disable.
+        
+    Return values:
+        mStorecast  (iN-iSttart-iH) x iH x iDim matrix filled with forecasts
+        mPredError  (iN-iSttart-iH) x iH x iDim matrix filled with forecast errors
+    """
+    iN = len(vY)
+    iFCsize = iN-iStart-iH
+    iDim = iAR*(iMA+1)
+    mStorecast = np.zeros((iFCsize,iH,iDim))
+    mPredError = np.zeros((iFCsize,iH,iDim))
+    iI=0
+    vSuccess = np.ones((iDim), dtype=bool)
+    mRMSPE = np.zeros((iDim,iH))
+    mMAPE = np.zeros((iDim,iH))
+
+    for ar in range(1,iAR+1):
+        for ma in range(iMA+1):        
+            mStorecast[:,:,iI], vSuccess[iI] = ForecastREAL(vY,ar,ma,iH,iStart,bPrint)
+            if min(vSuccess) != max(vSuccess):
+                print('Oh no! Something has gone wrong...., Call Charles')
+            iI += 1
+            print("Iteration done for:", ar, ma)
+            
+    for i in range(iDim):
+        print('Prediction error, model: ', i)
+        mPredError[:,:,i] = PE_Forecast(vY, iH, iStart, mStorecast[:,:,i])
+        mRMSPE[i,:], mMAPE[i,:] = RMS_MAPE(mPredError[:,:,i])
+    
+    mDMstats = DieboldMariano(mPredError)
+
+    return mStorecast, mPredError, mRMSPE, mMAPE, mDMstats
+
+###########################################################
+### PE_Forecast(vY, iAR,iMA, iH, iStart, bPrint)
+def PE_Forecast(vY, iH, iStart, mForecast):
+    """
+    Purpose:
+        To calculate the prediction error from the forecasted values
+    Input:
+        vY              Vector, of dependent variables
+        iH              Integer, number of h-step ahead forecast
+        iStart          Integer, Indicating the starting value of the out of sample estimation
+        mForecast       Matrix, containing the h-step ahead forecasts
+        
+    Returns:
+        mPE_Forecast    Matrix, containing the prediction errors for the h-step ahead forecasts
+    """
+    (iN,iK) = mForecast.shape
+    mPE_Forecast = np.zeros_like(mForecast)
+    for h in range(iH):
+        endh = -(5-h)
+        # if h > 4:
+        #     endh = None
+        mPE_Forecast[:,h] = vY[iStart+h:endh] - mForecast[:,h] 
+        
+    return mPE_Forecast
+
+###########################################################
+### PlotGraph(dfPrices)
+def DieboldMariano(mPredError):
+    """
+    Purpose:  
+        Computing an (iAR x iMA) x (iAR x iMA) matrix of test statistics
+        for the Diebold-Mariano test, where we test whether there is significant
+        loss differential between two models.
+        
+    Inputs:
+        mPredError      iN x iH x iModels
+        
+    Return values
+        mDMtest         (iAR x iMA) x (iAR x iMA) matrix of test statistics
+    """
+    iN, iH, iModels = mPredError.shape
+    mDMstats = np.zeros((iModels, iModels, iH))    
+    iLags = round(iN**(1/3)+1)
+    for h in range(iH):
+        print(h)
+        for i in range(iModels):
+            for j in range(iModels):
+                vLD = (np.square(mPredError[:,h,i]) - np.square(mPredError[:,h,j])).reshape(-1,1)
+                dMean = np.mean(vLD)
+                vACorr, vACov = ACF(vLD, iLags, 0, False)
+                dDMdenom = np.sqrt((vACov[0] + np.sum(vACov[1:-2]))/iN)
+                mDMstats[i,j,h] = dMean / dDMdenom
+                            
+    return mDMstats
+
+###########################################################
+### Model_select(iAR,iMA,vP,mX,vY)
+def Model_select(iAR,iMA,vP,mX,vY):
+    """
+    Purpose:
+        Calculates the AIC information criteria, AICc information criteria and the BIC information criteria
+        to develop statistics for model selection
+            
+    Input:
+        iAR         Integer, number of AR lags in the timeseries
+        iMA         Integer, number of MA lags in the timeseries
+        vP          Vector, Containing optimal set op parameters
+        mX          Matrix, containing the set op dependent variables
+        
+    Returns:
+        dAIC        Float, AIC value
+        dAICc       Float, AIC-corrected value
+        dBIC        Float, BIC value
+        dTest       Float, Jarque-Bera test statistic
+        bTest       Boolean, true if null hypothesis is not rejected
+    """
+    #Initialisation
+    (iN,iK) = mX.shape
+    L= iAR+iMA+1
+    vB = vP[0:1+iAR+iMA]
+    #Fix dimentions of vY, vB
+    vB = np.reshape(vB, (-1,1))
+    vY = np.reshape(vY, (-1,1))
+    
+    vE= vY-mX@vB
+    #Compute selection criteria
+    dAIC= np.log(vE.T @ vE)+(2*L)/iN
+    dAICc= np.log(vE.T @ vE)+(2*L)/iN*(iN+2*L)/(iN-L-1)
+    dBIC= np.log(vE.T @ vE)+(2*np.log(iN))/iN
+    
+    
+    # Perform Jarque-Bera test for residuals:
+    (dTest, bTest) = JBtest(vE)
+    vAutoCorrResid, vAutoCovResid = ACF(vE, 100, 0, False)
+    vPACFresid = PACF(vE, 100, False)
+    dLBtest, bLBbool = LBtest(vE, 12, 0)
+    
+    vX = np.arange(0,101)
+    fig, ax = plt.subplots(2, 1, figsize=(15,10))
+    ax[0].bar(vX, vAutoCorrResid[:,0])
+    ax[1].bar(vX, vPACFresid[:,0])
+    fig.show()
+    
+    return (dAIC,dAICc,dBIC, dTest, bTest, dLBtest, bLBbool)
+
+###########################################################
+### Test_ML(iARm,iMAm,isimSigma)
+def Test_ML(iARm,iMAm,isimSigma):
+    """
+    Purpose:
+        To test the ML estimator using a simulated ARMA timeseries. Defined by
+        the input parameters. 
+            
+    Input:
+        iARm        Integer, number of AR lags in the timeseries
+        iMAm        Integer, number of MA lags in the timeseries
+        isimSigma   Integer, Sigma of the simulated time series
+    """
+    vBfill = np.arange(0.3, -0.3, -0.05)
+    print('Starting the test:')
+    for ar in range(1,iARm+1):
+        for ma in range(iMAm+1):
+            iAR = ar
+            iMA = ma
+            vBtest = np.zeros(1+iAR+iMA)
+            for i in range(1,iAR+iMA+1):
+                vBtest[i] = vBfill[i]
+            vBtest[0] = 0.05
+            vYtest= SimARMA(iAR, iMA, isimSigma, 5000, vBtest)
+            plt.plot(vYtest)
+            plt.show()
+            print("Estimating model using: AR lags: ",ar,'MA lags: ',ma)
+            (vP, mS2, mS2hd, dLL,dAIC,dAICc,dBIC, mX, bSuccess) = EstimateRegrNorm(vYtest, iAR, iMA)
+            print("True vector of parameters: \n", vBtest, isimSigma)
+
+###########################################################
+### Test_ML(iARm,iMAm,isimSigma)
+def RMS_MAPE(mY):
+    """
+    Purpose:
+        Calculate the Root Mean Squared Prediction error and the Mean Absolute
+        Prediction Error for a 2-dimensional array.
+            
+    Input:
+        mY          matrix, containing h-steps ahead forecastst for T timepoints
+        
+    Return value:
+        vRMSPE      1 x h vector containing the RMSPEs for a single model
+        vMAPE       1 x h vector containing the MAPEs for a single model
+    """
+    iN, iH = mY.shape
+    vRMSPE = np.zeros((1,iH))
+    vMAPE = np.zeros((1,iH))
+    
+    for h in range(iH):
+        dSumH = (1 / (iN - h)) * (mY[:,h].T @ mY[:,h])
+        dRMSPE = np.sqrt(dSumH)
+        vRMSPE[0,h] = dRMSPE
+        
+        vAbs = np.abs(mY[:,h])
+        dMAPE = (1 / (iN - h)) * np.sum(vAbs)
+        vMAPE[0,h] = dMAPE
+    
+    return(vRMSPE, vMAPE)
+    
+###########################################################
+### vLL= LnLRegr(vP, vY, mX)
+def LnLRegrMV(vP, mY, mX, iP):
+    """
+    Purpose:
+        
+
+    Inputs:
+
+    Return value:
+        
+    """
+    # Initialisation
+    (iKP,iN) = mX.shape
+    iKP = iKP-1
+    iK = int(iKP / iP)
+    
+    # Extracting parameters
+    mP = np.reshape(vP, ((iK),1+(iK*(iP+1))),'F')
+    mSigma = mP[:,-iK:]
+    mSigmai = np.linalg.inv(mSigma)
+    dSigmadet = np.linalg.det(mSigma)
+    mB = mP[:,:-iK]
+    
+    ## Following code is in case of companion form, currently does not work because of
+    ## singular Sigma matrix.
+    
+    # # Constructing A matrix
+    # mA = np.zeros((iKP, (iKP+1)))
+    # mA[:iK,:] = mB
+    # for p in range(1,iP):
+    #     mA[p*iK:,1+(p-1)*iK:1+p*iK] = np.eye(iK)
+    
+    # # Constructing Sigma marix (new)
+    # mSN = np.zeros((iKP, iKP))
+    # mSN[:iK,:iK] = mSigma
+    # mSigmai = np.linalg.inv(mSigma)
+    
+    mE = mY - mB @ mX 
+    
+    # Estimation    
+    vLL = np.zeros((iN))
+    for t in range(iN):
+        vLL[t]= -0.5*(np.log(2*np.pi * dSigmadet) + mE[:,t].T @ mSigmai @ mE[:,t])
+    print (".")     # Give sign of life
+    vLL = vLL.reshape(iN) # Reshape into 1D vector to ensure that the Jacobian function works
+
+    return vLL
+
+###########################################################
+### dY= emptyfunc(vX)
+def CreateX_YMV(iP, mY, boolVARp = True):
+    """
+    Purpose:
+        Creating an mY and mX matrix for a (kp)-dimensional VAR(1) model in
+        companion form.
+        
+    Inputs:
+        iP              Integer, number of lags in the original VAR(p) model
+        mY              iN x iK matrix containing time series in the columns
+        boolVARp        boolean, is True if we want VAR(p). Set this to False
+                        in case the companion form is required.
+        
+    Return values:
+        mXtrunc         (iN - max(p,q)) x iK matrix containing truncated lagged log returns
+        vYtrunc         (iN - max(p,q)) x 1 vector containing truncated log returns
+    """
+    mYt = mY.T
+    iK, iN = mYt.shape
+    mYtnew = np.zeros(((iP*iK),iN-iP))
+    mX = np.zeros_like(mYtnew)
+    iI= 0
+    
+    for p in range(iP):
+        mYtnew[iI:iI+iK,:] = mYt[:,iP-p:iN-p]
+        mX[iI:iI+iK,:] = mYt[:,iP-p-1:iN-p-1]
+        iI += iK
+        
+    if boolVARp == True:
+        mYtnew = mYtnew[:iK,:]
+    else:
+        # Constructing A matrix
+        mA = np.zeros((iKP, (iKP+1)))
+        mA[:iK,:] = mB
+        for p in range(1,iP):
+            mA[p*iK:,1+(p-1)*iK:1+p*iK] = np.eye(iK)
+        
+        # Constructing Sigma marix (new)
+        mSN = np.zeros((iKP, iKP))
+        mSN[:iK,:iK] = mSigma
+        mSigmai = np.linalg.inv(mSigma)
+
+            
+    return (mX, mYtnew)
+
+###########################################################
+### (vP, mS2, mS2hd, dLL, dAIC, dAICc, dBIC, mX, bSuccess)= EstimateRegrNorm(vYfull, iAR, iMA)
+def EstimateRegrNormMV(mY, iP, iLagsGamma, iIRFlags):
+    """
+    Purpose:
+        Estimate the VAR-model coefficients for a k-dimensional VAR(p)-model.
+        Furthermore, the PlotACovF function is also called and various model
+        selection criteria are calculated.
+            
+    Input:
+        mY          iN x iK matrix, containing time series in the columns
+        iP          Integer, order of VAR(p)
+        iLagsGamma  Integer, number of lags for the ACovF plot
+
+    Returns:
+        mBeta       iK x (iKP+1) matrix of estimated coefficients
+        vMu         iK vector of unconditional means
+        mCovE       iK x iK matrix of unconditional covariance matrix
+        mGamma      (iK,iK,iLagsGamma)-matrix where each iK x iK denotes the 
+                    covariance matrix for a specific lag
+        dAIC        Double, AIC value
+        dAICc       Double, AICc value
+        dBIC        Double, BIC value
+    """
+    # Create mX and vY with correct length
+    (mX, mYnew) = CreateX_YMV(iP, mY)
+    (iKP,iN) = mX.shape
+    iK = int(iKP / iP)
+    mXnew = np.ones((iKP+1,iN))
+    mXnew[1:,:] = mX
+    mBeta, mCovE, mE = OLSmv(mXnew, mYnew)   
+    
+    mPhiSum = np.eye(iK)
+    for p in range(iP):
+        mPhiSum -= mBeta[:,1+p*iK:1+p*iK+iK]
+    
+    vMu = mBeta[:,0] @ np.linalg.inv(mPhiSum)
+    
+    # Creating ACovF plots
+    mGamma = np.zeros((iK,iK,iLagsGamma))
+    for l in range(iLagsGamma):
+        mGamma[:,:,l] = (mYnew[:,iLagsGamma:] @ mYnew.T[iLagsGamma-l:iN-l,:])/iN
+    PlotACovF(mGamma)
+    
+    # AIC, AICc, BIC
+    iL = 0.5*iK*(iK+1) + iK + (iP * iK * iK)
+    dAIC= np.log(np.linalg.det(mCovE))+(2*iL)/iN
+    dAICc= np.log(np.linalg.det(mCovE))+(2*iL)/iN*(iN+2*iL)/(iN-iL-1)
+    dBIC= np.log(np.linalg.det(mCovE))+(2*np.log(iN))/iN
+    
+    # Cholesky upper triangular
+    mYnewChol = np.flip(mYnew,0)
+    mBetaChol, mCovEChol, mEChol = OLSmv(mXnew, mYnewChol)   
+
+    mCholU = np.linalg.cholesky(mCovEChol).T
+    mCholL = np.linalg.cholesky(mCovE)
+    
+    if iP<3:
+        sCholType  = 'Lower triangular Cholesky'
+        mIRFl = IRF(mBeta, mCholL, iP, iIRFlags, sCholType)
+        sCholType = 'Upper triangular Cholesky'
+        mIRFu = IRF(mBeta, mCholU, iP, iIRFlags, sCholType)
+    
+    return (mBeta, vMu, mCovE, mGamma, dAIC, dAICc, dBIC, mCholU, mYnew, mXnew)
+
+###########################################################
+### dY= emptyfunc(vX)
+def PlotACovF(mGamma):
+    """
+    Purpose:
+        Plot a iK x iK plot where the diagonal plots are the autocovariance
+        functions and the off-diagonal elements are cross-autocovariance functions.
+        
+    Inputs:
+        mGamma      (iK,iK,iLagsGamma)-matrix where each iK x iK denotes the 
+                    covariance matrix for a specific lag        
+    """
+    iK, iK, iLagsGamma = mGamma.shape
+    vIndex = np.array(range(iLagsGamma))
+    fig, ax = plt.subplots(iK, iK, figsize=(15,10))
+    for x in range(iK):
+        for y in range(iK):
+            ax[x,y].bar(vIndex,mGamma[x,y,:])
+    fig.tight_layout(pad=1.08)
+    fig.savefig('plot_acovfMV.png')
+    fig.show()
+
+    return 
+
+###########################################################
+### dY= emptyfunc(vX)
+def IRF(mBeta, mChol, iP, iIRFlags, sCholType):
+    """
+    Purpose:
+        
+    Inputs:
+    """
+    iK = mBeta.shape[0]
+    mPhi = np.zeros((iK,iK,iP))
+    mIRF = np.zeros((iK, iIRFlags+1, iK))
+    mShock = np.eye(iK)
+    vX = np.arange(iIRFlags+1)
+    lNames = ['DJIA', 'N255', 'SSMI']
+    
+    for p in range(iP):
+        mPhi[:,:,p] = mBeta[:,1+iK*p:1+iK+iK*p]
+    
+    for s in range(iK):
+        for h in range(1,iIRFlags+1):
+            for p in range(iP):
+                mIRF[:,h,s] += (mPhi[:,:,p]**(h-1-p)) @ mChol @ mShock[:,s]
+            if h<=iP: 
+                mIRF[:,h,s] = np.eye(iK) @ mChol @ mShock[:,s]
+            if h==iP and iP == 2:
+                mIRF[:,h,s] = (mPhi[:,:,0]**(h-1)) @ mChol @ mShock[:,s] + np.eye(iK) @ mChol @ mShock[:,s]
+
+    fig, ax = plt.subplots(iK, iK, figsize=(15,15))
+    
+    for x in range(iK):
+        for y in range(iK):
+            ax[x,y].plot(vX, mIRF[y,:,x].T)
+            ax[x,y].title.set_text('Impulse response from %s to %s'%(lNames[x],lNames[y]))
+    fig.tight_layout(pad=1.08)                   
+    fig.show()
+
+    return mIRF
+
+###########################################################
+### dY= emptyfunc(vX)
+def VECM(mYfull, iP):
+    """
+    Purpose:
+        To estimate an iK-dimensional VAR(p) in VECM-form, only works up until
+        p = 2 (so no general form).
+        Computes the PI matrix which holds the cointegration relationships.
+        Returns alpha en beta values. Some dickey fuller statistics to test for
+        Integration of residuals of VECM and residuals of cointegration relationship functions.
+        
+        
+    Inputs:
+        mYfull                  Matrix, containing all the log prices for iK stocks
+        iP                      Integer, indicating the amount of lags in the VECM model
+    Returns:
+        Tuple containing:
+            mBetaC              Matrix, Holding the cointegration relationships
+            mPI                 Matrix, the PI matrix in the VECM equation
+            mBetafull           Matrix, containing: Mu | alpha | Gamma 2 if p>1
+            mCovEvecm           Matrix, covariance of the residuals of vecm model
+            mDFstatsvE          Matrix, containing Dickey-Fuller test statistics of the residuals from cointegration relationship functions
+            mDFstatsvecm        Matrix, containing Dickey-Fuller test statistics of the VECM residuals in the last column
+            dAIC                Double, AIC value
+            dAICc               Double, AICc value
+            dBIC                Double, BIC value
+    """
+    (mX, mY) = CreateX_YMV(iP, mYfull)    
+    iKP, iN = mX.shape
+    iK = int(iKP / iP)
+    mXnew = np.ones((iKP+1,iN))
+    mXnew[1:,:] = mX
+    
+    # Construct regressor matrixes to check the cointegration relations
+    mX1_23 = np.zeros((iK-1,iN))
+    for k in range(1,iK):
+        mX1_23[k-1,:] = mY[k,:]
+    mX2_3 = np.zeros((iK-2,iN))
+    for k in range(2,iK):
+        mX2_3[k-2,:] = mY[k,:]
+        
+    # Compute the cointegration vector
+    mBeta1_23, mCovE1_23, vE1_23 = OLSmv(mX1_23, mY[0,:].reshape(1,-1))
+    mBeta2_3, mCovE2_3, vE2_3 = OLSmv(mX2_3, mY[1,:].reshape(1,-1))
+    
+    # Construct cointegration relationship beta
+    mBetaC = np.eye(iK)[0:2,:]
+    mBetaC[0,1:] = mBeta1_23
+    mBetaC[1,2:] = mBeta2_3
+    
+    # Check if residuals are != I(1)
+    mDFstatsvE = DickeyFuller(vE1_23.reshape(-1,1), vE2_3.reshape(-1,1))
+    
+    # Construct regressor matrix of the VECM model
+    mYdiff = np.diff(mY)
+    mXvecm = np.ones((iKP,iN-1))
+    if iP>1:
+        mYdiffLag = np.diff(mX[1:1+iK,:])
+        mXvecm[iK:,:] = mYdiffLag
+    mXvecm[1:iK,:] = mBetaC @ mXnew[1:iK+1,1:]
+    mBetafull,mCovEvecm, mEvecm = OLSmv(mXvecm, mYdiff)
+    mPI = mBetafull[:,1:iK] @ mBetaC
+    mDFstatsvecm = DickeyFuller(vE1_23.reshape(-1,1), mEvecm)
+    
+     # AIC, AICc, BIC
+    iL = 0.5*iK*(iK+1) + iK + (iP * iK * iK)
+    dAIC= np.log(np.linalg.det(mCovEvecm))+(2*iL)/iN
+    dAICc= np.log(np.linalg.det(mCovEvecm))+(2*iL)/iN*(iN+2*iL)/(iN-iL-1)
+    dBIC= np.log(np.linalg.det(mCovEvecm))+(2*np.log(iN))/iN
+    
+    # Johansen Trace test
+    vJohansenTest = Johansen(mPI, iN)
+    
+    return (mBetaC, mPI, mBetafull, mCovEvecm, mDFstatsvE, mDFstatsvecm, dAIC, dAICc, dBIC, vJohansenTest)
+
+###########################################################
+### dY= emptyfunc(vX)
+def OLSmv(mX, mY):
+    """
+    Purpose:
+        
+    Inputs:
+        
+    """ 
+    iN = mY.shape[1]
+    # Beta = (X'X)^1*X'Y 
+    mXtX = mX @ mX.T
+    mXtXi = np.linalg.inv(mXtX)
+    mBetaT = mXtXi @ mX @ mY.T
+    mBeta = mBetaT.T
+    
+    mE = mY - mBeta @ mX
+    mCovE = (mE @ mE.T) / iN
+
+    return mBeta, mCovE, mE
+
+###########################################################
+### dY= emptyfunc(vX)
+def Johansen(mPI, iN):
+    """
+    Purpose:
+        
+    Inputs:
+        
+    """
+    iK, iC = mPI.shape
+    
+    vLambda, mEigenvector = np.linalg.eig(mPI)
+    vLambda = np.sort(vLambda)    
+    vTestStat = np.zeros(iK) 
+    
+    for k in range(1,iK+1):
+        print(k)
+        for i in range(k):
+            print('i',i+1)
+            vTestStat[k-1] += np.log(1-vLambda[-(i+1)])
+            print(vTestStat[k-1])
+        vTestStat[k-1] = vTestStat[k-1] * -iN
+    vTestStat = np.flip(vTestStat)
+
+    return vTestStat
+
+###########################################################
+### main
+def main():
+    # Magic numbers
+    sFileName = 'triv_ts.xlsx'
+    lStringsIL = ('DJIA closing prices', 'N255 closing prices', 'SSMI closing prices',
+                'Date', 'Index level', 'plot_indexlevel.png')
+    iDF = 4
+    lStringLR = ('DJIA log returns', 'N255 log returns', 'SSMI log returns',
+                'Date', 'log return', 'plot_logret.png', 'Simulated data',
+                'IID Student-t', 'IID Gaussian')
+    iLagsTest = 12
+    iLagsPlot = 100
+    vI = range(0,101)
+    lStringACF = ('DJIA ACF', 'N255 ACF', 'SSMI ACF',
+                'Lag', 'Autocorrelation', 'plot_acf.png')
+    lStringPACF = ('DJIA PACF', 'N255 PACF', 'SSMI PACF',
+                   'Lag', ' Partial Autocorrelation', 'plot_pacf.png')
+    iAR= 2
+    iMA= 2
+    iH = 5
+    iP = 2
+    iLagsGamma = 25
+    iIRFlags = 15
+
+    # Initialisation
+    dfPrices = readData(sFileName)
+    (mPrice, mLogPrice, mLogRet, vDates, mPriceH1, mLogPriceH1, mLogRetH1, vDatesH1) = TakeLogs(dfPrices)
+    iStartLength = mLogRetH1.shape[0]
+
+    # Question one
+    mSim = SimData(mLogRetH1, iDF)
+    mStats = DescriptiveStats(mLogRetH1)
+    (vTestStat, vTestBool) = LBtest(mLogRetH1, iLagsTest, 0)
+    mAutoCorr100, mAutoCov100 = ACF(mLogRetH1, iLagsPlot, mStats, True)
+    mPACF100 = PACF(mLogRetH1, iLagsPlot, True)
+    mDFstats = DickeyFuller(mLogPriceH1, mLogRetH1)
+
+    # Test the ML estimator
+    Test_ML(2,2,0.2)
+    
+    # Estimate the ARMA models using own ML estimator
+    vPm0 = FullEst(2,2,mLogRetH1[:,0])
+    vPm1 = FullEst(2,2,mLogRetH1[:,1])
+    vPm2 = FullEst(2,2,mLogRetH1[:,2])
+    
+    # Test ARMA using package:
+    model = ARIMA(mLogRetH1[:,2], order=(iAR,0,iMA))    
+    modeltrue_fit = model.fit()    
+    print(modeltrue_fit.summary())
+    
+    # Ideal models: DJIA 2,2    N255 2,0    SSMI 2,2 
+    # Now test residuals
+    DJIA22 = EstimateRegrNorm(mLogRetH1[:,0], 2, 2)
+    N25520 = EstimateRegrNorm(mLogRetH1[:,1], 2, 0)
+    SSMI22 = EstimateRegrNorm(mLogRetH1[:,2], 2, 2)
+    
+    # Out-of-sample Analysis
+    mStorecastM0, mPredErrorM0, mRMSPEM0, mMAPEM0, mDMstats0 = Storecast(mLogRet[:,0],iAR,iMA,iH,iStartLength, False)
+    mStorecastM1, mPredErrorM1, mRMSPEM1, mMAPEM1, mDMstats1 = Storecast(mLogRet[:,1],iAR,iMA,iH,iStartLength, False)
+    mStorecastM2, mPredErrorM2, mRMSPEM2, mMAPEM2, mDMstats2 = Storecast(mLogRet[:,2],iAR,iMA,iH,iStartLength, False)
+    
+    
+    # Multivariate in-sample analysis
+    (mBetaMV1, vMuMV1, mCovEMV1, mGammaMV1, dAICmv1, dAICcmv1, dBICmv1, mCholU1, mYmv1, mXmv1) = EstimateRegrNormMV(mLogRet, 1, iLagsGamma, iIRFlags)
+    (mBetaMV2, vMuMV2, mCovEMV2, mGammaMV2, dAICmv2, dAICcmv2, dBICmv2, mCholU2, mYmv2, mXmv2) = EstimateRegrNormMV(mLogRet, 2, iLagsGamma, iIRFlags)
+    (mBetaMV3, vMuMV3, mCovEMV3, mGammaMV3, dAICmv3, dAICcmv3, dBICmv3, mCholU3, mYmv3, mXmv3) = EstimateRegrNormMV(mLogRet, 3, iLagsGamma, iIRFlags)
+    
+    # VECM Part
+    VECM_store1 = VECM(mLogRet, 1)
+    VECM_store2 = VECM(mLogRet, 2)
+
+    # Output
+    PlotGraph(mPriceH1, vDatesH1, lStringsIL, None, False)
+    PlotGraph(mLogRetH1, vDatesH1, lStringLR, mSim, True)
+    print(mStats)
+    print(vTestStat)
+    # print(vP)
+    PlotBar(mAutoCorr100, vI, lStringACF)
+    PlotBar(mPACF100, vI, lStringPACF)
+    
+###########################################################
+### start main
+if __name__ == "__main__":
+    main()
