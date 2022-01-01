@@ -1,0 +1,383 @@
+###########################################################
+### Imports
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import scipy.optimize as opt
+import statsmodels.api as sm
+from printtex import *
+
+###########################################################
+### InitData()
+def InitData(sIn, vVar):
+    """
+    Purpose:
+        Read the shazam data file
+
+    Inputs:
+        sIn     string, data file
+        vVar    vector, columns to use
+
+    Return value
+        vY      iN vector, dependents
+        mX      iN x iK matrix, independents, excluding constant
+        iM      integer, number of observations per time period
+    """
+    df= pd.read_csv(sIn)
+    df['excessR']= df['ret']- df['RF']
+    df= df.loc[:,vVar]
+    df= df.dropna(how='any')
+    data= pd.DataFrame()
+    for i in df['ticker'].unique():
+        data= pd.concat([data, df[df['ticker']==i]], axis=0)
+    data.index=range(len(data))
+    iK1= len(vVar)
+
+    # Count years and cross-section observations
+    iM= len(data['ticker'].unique()) 
+
+    # Select y and X
+    vY= data['excessR'].values
+    mX= data[data.columns[3:6]].values
+    # mX= np.hstack([np.ones((mX.shape[0], 1)), mX])
+
+    # vY.shape= (len(vY), 1)
+
+    return vY, mX, iM, data
+
+###########################################################
+### Get_Data_Sector()
+def Get_Data_Sector(sIn, vVar):
+    """
+    Purpose:
+        Read the shazam data file
+
+    Inputs:
+        sIn     string, data file
+        vVar    vector, columns to use
+
+    Return value
+        vY      iN vector, dependents
+        mX      iN x iK matrix, independents, excluding constant
+        iM      integer, number of observations per time period
+    """
+    df= pd.read_csv(sIn)
+    df['excessR']= df['ret']- df['RF']
+    df= df.loc[:,vVar]
+    df= df.dropna(how='any')
+    data= pd.DataFrame()
+    for i in df['ticker'].unique():
+        data= pd.concat([data, df[df['ticker']==i]], axis=0)
+    data.index=range(len(data))
+    
+    for i in data['sector'].unique()[:-2]:
+        a= np.zeros((len(data)))
+        a[data[data['sector']==i].index]=1
+        data[i]= a
+    
+    # Count years and cross-section observations
+    iM= len(data['ticker'].unique()) #公司数量是iM
+    data= data.drop(['sector','industry'], axis=1)
+    # Select y and X
+    vY= data['excessR'].values
+    mX= data[data.columns[3:]].values
+
+    return vY, mX, iM, data
+
+###########################################################
+### Get_Data_Industry()
+def Get_Data_Industry(sIn, vVar):
+    """
+    Purpose:
+        Read the shazam data file
+
+    Inputs:
+        sIn     string, data file
+        vVar    vector, columns to use
+
+    Return value
+        vY      iN vector, dependents
+        mX      iN x iK matrix, independents, excluding constant
+        iM      integer, number of observations per time period
+    """
+    df= pd.read_csv(sIn)
+    df['excessR']= df['ret']- df['RF']
+    df= df.loc[:,vVar]
+    df= df.dropna(how='any')
+    data= pd.DataFrame()
+    for i in df['ticker'].unique():
+        data= pd.concat([data, df[df['ticker']==i]], axis=0)
+    data.index=range(len(data))
+    
+    for i in data['industry'].unique()[:-2]:
+        a= np.zeros((len(data)))
+        a[data[data['industry']==i].index]=1
+        data[i]= a
+    
+    # Count years and cross-section observations
+    iM= len(data['ticker'].unique()) 
+    data= data.drop(['sector','industry'], axis=1)
+    # Select y and X
+    vY= data['excessR'].values
+    mX= data[data.columns[3:]].values
+
+    return vY, mX, iM, data
+
+###########################################################
+### GroupMeans()
+def GroupMeans(mX, data):
+    """
+    Purpose:
+      Calculate the group means of mX, where iM groups are available
+
+    Inputs:
+      mX        iM*iT x iK matrix of data
+
+    Return value:
+      mM        iM*iT x iK matrix, with data replaced by group means
+    """
+    mMu= np.zeros_like(mX).astype(float)
+    for i in range(len(data['ticker'].unique())):
+        indexx= data[data['ticker']==data['ticker'].unique()[i]].index
+        mMu[indexx[0]:indexx[-1]]= np.mean(mX[indexx[0]:indexx[-1]+1], axis=0) 
+
+    return mMu
+
+###########################################################
+### Regression()
+def Regression(vY, mX, ddof= None): 
+    """
+    Purpose:
+        Perform the regression itself, reporting standard quantities
+
+    Inputs:
+        vY      iN vector, regressand
+        mX      iN x iK matrix, regressors
+        ddof    (optional, default= None) degrees of freedom lost in regression. If not specified, iK is used
+
+    Return values:
+        vB  iK vector, parameters
+        vS  iK vector, standard errors
+        dS2 double, residual variance
+        dR2 double, coefficient of determination
+    """
+    (iN, iK)= mX.shape
+    if (ddof is not None):
+        iK= ddof
+
+    mXtXi= np.linalg.inv(mX.T@mX)
+    vB= mXtXi @ mX.T @ vY
+
+    # R2= 1 - e'e / (y-m)'(y-m)
+    vE= vY - mX@vB
+    dS2= vE.T@vE/ (iN-iK)
+    mS2= dS2 * mXtXi
+    vS= np.sqrt(np.diag(mS2))
+    vS.shape= vB.shape
+
+    dM= vY.mean()
+    dR2= 1 - vE.T@vE / ((vY-dM).T @ (vY-dM))
+
+    return (vB, vS, dS2, dR2)
+
+###########################################################
+### OLSRegr()
+def OLSRegr(vY, mX, asX, bPrint=True):
+    """
+    Purpose:
+      Estimate using OLS, incorrect results!
+
+    Inputs:
+      vY        iM*iT  vector of regressand, ordered by time-first
+      mX        iM*iT x iK matrix of regressors, excluding consant
+      iM        integer, number of cross-section observations
+      asX       iK array of x-labels
+      bPrint    (optional, default=TRUE) boolean, if TRUE print outcome
+
+    Return values:
+      mBS       iK x 2 vector of estimates and standard deviations
+    """
+    (iN, iK)= mX.shape
+    mXc= np.hstack([np.ones((iN, 1)), mX])
+    iP= iK+1
+
+    (vB, vS, dS2, dR2)= Regression(vY, mXc)
+
+
+    if (bPrint):
+        print ("OLS results, single constant, hence inconsistent")
+        asR= ["const"]+asX
+        printtex(np.vstack((vB, vS)).T, index=asR, columns=['b', 's.e.'], formats=['%8.4f', '(%.3f)'])
+        print ("R2: %g, s2: %g" % (dR2, dS2))
+    
+    return np.vstack([vB, vS]).T
+
+###########################################################
+### OLSDRegr()
+def OLSDRegr(vY, mX, asX, data, bPrint=True):
+    """
+    Purpose:
+      Estimate using OLS, with extended dummy X matrix
+    
+    Inputs:
+      vY        iM*iT  vector of regressand, ordered by time-first
+      mX        iM*iT x iK matrix of regressors, excluding consant
+      iM        integer, number of cross-section observations
+      asX       iK array of x-labels
+      bPrint    (optional, default=TRUE) boolean, if TRUE print outcome
+
+    Return values:
+      mBS       iK x 2 vector of estimates and standard deviations
+    """
+    
+    mD= np.zeros((len(data), len(data['ticker'].unique())))
+    for j in range(len(data['ticker'].unique())):
+        mD[data[data['ticker']==data['ticker'].unique()[j]].index,j]=1
+    mXc= np.hstack([mD, mX])
+
+    (vB, vS, dS2, dR2)= Regression(vY, mXc)
+
+    if (bPrint):
+        asD= ["A%i" % i for i in range(len(data['ticker'].unique()))]
+        print ("\nOLS regression, adding a separate constant for each group, consistent:");
+        printtex(np.vstack((vB, vS)).T, index=asD+asX, columns=['b', 's.e.'], formats=['%8.4f', '(%.3f)'])
+        print ("R2: %g, s2: %g" % (dR2, dS2))
+    return np.vstack([vB, vS]).T
+
+###########################################################
+### FERegr()
+def FERegr(vY, mX, iM, asX, data, bPrint=True):
+    """
+    Purpose:
+      Estimate using Fixed Effects, following notation in
+      dpd.pdf/Baltagi (1995)
+
+    Inputs:
+      vY        iM*iT x 1 vector of regressand, ordered by time-first
+      mX        iM*iT x iK matrix of regressors, excluding consant
+      iM        integer, number of cross-section observations
+      asX       iK array, x-labels
+      bPrint    (optional, default=TRUE) boolean, if TRUE print outcome
+
+    Return values:
+      mBS       iK x 2 vector of estimates and standard deviations
+    """
+    (iN, iK)= mX.shape
+    iT= iN/iM
+    iP= iK+1
+    mXD= mX - GroupMeans(mX, data)
+    vYD= vY - GroupMeans(vY, data)
+
+    vI= np.logical_not(np.isclose(np.sum(np.fabs(mXD), axis=0), 0)) #np.isclose(np.sum(np.fabs(mXD), axis=0), 0)测试mXD每一列的sum和0是否相等
+    if (np.sum(vI) < iK):
+        print ("Warning: Skipping columns of X, due to multicollinearity")
+
+    iP= iM + np.sum(vI)
+
+    # Correct standard errors
+    (vB, vS, dS2, dR2)= Regression(vYD, mXD, ddof=iP)
+    vV= vYD - mXD@vB
+
+    if (bPrint):
+        print ("Fixed effects (corresponds to Group Means estimation in DPD) estimation results in");
+        printtex(np.vstack((vB, vS)).T, index=asX, columns=['b', 's.e.'], formats=['%8.4f', '(%.3f)'])
+
+    return np.vstack([vB, vS]).T
+
+###########################################################
+### FEdRegr()
+def FEdRegr(vY, mX, iM, asX, data, bPrint=True):
+    """
+    Purpose:
+      Estimate using Fixed Effects, following notation in
+      dpd.pdf/Baltagi (1995)
+
+    Inputs:
+      vY        iM*iT x 1 vector of regressand, ordered by time-first
+      mX        iM*iT x iK matrix of regressors, excluding consant
+      iM        integer, number of cross-section observations
+      asX       iK array, x-labels
+      bPrint    (optional, default=TRUE) boolean, if TRUE print outcome
+
+    Return values:
+      mBS       iK x 2 vector of estimates and standard deviations
+    """
+    (iN, iK)= mX.shape
+    iT= iN/iM
+    iP= iK+1
+    mXD= mX 
+    mXD= np.hstack([mXD, np.ones((iN, 1))])
+    vYD= vY
+
+    vI= np.logical_not(np.isclose(np.sum(np.fabs(mXD), axis=0), 0)) #np.isclose(np.sum(np.fabs(mXD), axis=0), 0)测试mXD每一列的sum和0是否相等
+    if (np.sum(vI) < iK):
+        print ("Warning: Skipping columns of X, due to multicollinearity")
+
+    iP= iM + np.sum(vI)
+
+    # Correct standard errors
+    (vB, vS, dS2, dR2)= Regression(vYD, mXD, ddof=iP)
+    vV= vYD - mXD@vB
+
+    if (bPrint):
+        print ("Fixed effects (corresponds to Group Means estimation in DPD) estimation results in");
+        printtex(np.vstack((vB, vS)).T, index=asX, columns=['b', 's.e.'], formats=['%8.4f', '(%.3f)'])
+
+    return np.vstack([vB, vS]).T
+
+###########################################################
+### PlotOLSDummy(mBS, sOut)
+def PlotOLSDummy(mBS):
+    """
+    Purpose:
+        Create the OLS dummy graph
+    """
+    plt.figure(figsize=[8,3])
+    iK= mBS.shape[0]
+    vI= np.arange(iK)+1
+    plt.errorbar(vI, mBS[:,0], yerr=mBS[:,1], fmt="+")
+    plt.legend(["Const"])
+
+    #dM= np.mean(mBS[:,0])
+    dM= 0
+    plt.plot(vI, dM*np.ones_like(vI), "k:")
+    plt.show()
+
+###########################################################
+### main()
+def main():
+    sIn= "sp500panel.csv"
+    vVar= ['date','ticker','excessR','Mkt-RF','SMB','HML','sector','industry']    # year, lscrap, d88, d89, grant, grant_1
+    asX= ["const", "Mkt-RF", "SMB", "HML"]
+    [vY, mX, iM, data]= InitData(sIn, vVar)
+    print ("Mean y: ", np.mean(vY), ", mean x: ", np.mean(mX, axis=0))
+    mBSOLS= OLSRegr(vY, mX, asX[1:], bPrint=True)
+    print('-'*80)
+    
+    mBSFE= FERegr(vY, mX, iM, asX[1:], data, bPrint=True)
+    print('-'*80)
+    
+    mR= np.hstack([mBSOLS, np.vstack([[np.nan, np.nan], mBSFE])])
+    print ("Results of Pooled and FE regression: ")
+    print (pd.DataFrame(mR, index=asX, columns=["beta", "s.e.", "beta", "s.e."]))
+    print('-'*80)
+
+    mBSOLS= OLSDRegr(vY, mX, asX[1:], data)
+    PlotOLSDummy(mBSOLS[:iM,:])
+    print('-'*80)
+        
+    [vY, mX, iM, dataSector]= Get_Data_Sector(sIn, vVar)
+    asX= [i for i in dataSector.columns[3:]]+["const"]
+    mBSector= FEdRegr(vY, mX, iM, asX, dataSector, bPrint=True)
+    PlotOLSDummy(mBSector[:iM,:])
+    print('-'*80)
+    
+    [vY, mX, iM, dataIndustry]= Get_Data_Industry(sIn, vVar)
+    asX= [i for i in dataIndustry.columns[3:]]+["const"]
+    mBIndustry= FEdRegr(vY, mX, iM, asX, dataIndustry, bPrint=True)
+    PlotOLSDummy(mBIndustry[:iM,:])
+
+###########################################################
+### start main
+if __name__ == "__main__":
+    main()
