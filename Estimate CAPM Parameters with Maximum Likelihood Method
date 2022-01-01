@@ -1,0 +1,402 @@
+"""
+Purpose
+1) Loading in price data of Unilever, S&P500 and the 3-month US Treasury Bills
+2) Estimating the CAPM through an OLS regression
+3) Using maximum likelihood assuming normality to estimate parameters
+4) Using maximum likelihood using a Student's T-distribution to estimate parameters
+"""
+
+import pandas as pd
+import numpy as np 
+import matplotlib.pyplot as plt
+import scipy as sp
+import datetime
+import pandas_datareader.data as web
+import datetime
+import fix_yahoo_finance as yf
+import math
+import scipy.stats as st
+from scipy.stats import norm
+import statsmodels.api as sm
+from grad import *
+import scipy.optimize as opt
+import math
+
+################################################################################
+################################################################################
+#### First we have the script for OLS and max. likelihood using normality ######
+##### Afterwards we do the same thing for the Student's T-distribution #########
+################################################################################
+################################################################################
+
+###########################################################
+### Get_data(start, end, n_Adj, close)
+def Get_data(start, end, n_Adj, close):
+    """
+    Purpose:
+      Get daily log returns of Unilever stock, S&P500 index, and 3-month Treasury Bill rates as risk free rates
+
+    Inputs:
+      start        datetime, start date of time series 
+      end          datetime, end date of time series
+      n_Adj        string, Adjusted close price of Unilever stock 
+      close        string, Close price of S&P500 index
+
+    Return value:
+      df           iN+1 x 4 DataFrame including Date, stock adjusted close price and index price
+    """
+    dfn=web.get_data_yahoo('UL',start,end).reset_index()       # Stock price data of Unilever
+    dfn=dfn[['Date',n_Adj]]
+    dfm=web.get_data_yahoo('^GSPC',start,end).reset_index()
+    dfm=dfm[['Date',close]]
+    dfr=pd.read_csv('3-Month Treasury Bills Rate.csv')         # Risk-free rate
+    dfr.rename(columns={'DATE':'Date'},inplace=True)
+    dfr=dfr[dfr['DTB3']!='.']
+    dfr['DTB3']=pd.to_numeric(dfr['DTB3'])
+    def f(x):
+        """
+        Purpose:
+          transfer Date of risk free rates from format "str" to "datetime"
+
+        Inputs:
+          x        every date of risk free rates in string format
+
+        Outputs:
+          x        every date of risk free rates in datetime format
+        """
+        x=x.replace('-','')
+        x=datetime.datetime.strptime(x,'%Y%m%d')
+        return x
+    dfr['Date']=[f(x) for x in dfr['Date']]
+    dfn=dfn[['Date','Adj Close']]                   # Next few lines are to merge columns into matrix
+    dfm=dfm[['Date','Close']]
+    df=pd.merge(dfn,dfm,how='inner',on='Date')
+    df=pd.merge(df,dfr,how='inner',on='Date')
+    return df
+
+
+###########################################################
+### Data_return(df)
+def Data_return(df):
+    """
+    Purpose:
+    Get excess log returns of stock and market
+
+    Inputs:
+    df       DataFrame including Date, stock adjusted close price and index price
+
+    Return value:
+    Return   DataFrame of excess log returns of stock and market
+    """    
+    mR=[]   # Market return 
+    sR=[]   # Stock return 
+    rF=[]   # Risk-free rate per day
+    for i in range(1,len(df['Date'])):
+        mR.append(math.log(df['Adj Close'][i]/df['Adj Close'][i-1])*100)
+        sR.append(math.log(df['Close'][i]/df['Close'][i-1])*100)
+        rF.append(df['DTB3'][i]/252)
+    Return=pd.DataFrame({'Date':df['Date'][1:],'mR':mR,'sR':sR,'rF':rF})
+    Return['mExcess']=Return['mR']-Return['rF']
+    Return['sExcess']=Return['sR']-Return['rF']
+    return Return
+
+
+###########################################################
+### OL(Return)
+def OL(Return):
+    """
+    Purpose:
+    Get results of OLS regression model
+
+    Inputs:
+    Return       DataFrame of excess log returns of stock and market
+
+    Return value:
+    None, results of OLS get printed within the function
+    """
+    vX= Return['mExcess']
+    mX= sm.add_constant(vX) 
+    mX = np.copy(mX)        # Transforming mX into an array for matrix multiplication
+    
+    vY= Return['sExcess']
+    vY= np.array(vY)
+    vY= vY.reshape(-1,1)    # Fixing dimensions of vY
+    
+    (iN, iK) = mX.shape
+    
+    vB = np.linalg.inv(mX.T @ mX) @ mX.T @ vY   # (X'X)^-1 X'Y
+    
+    vE = vY - (mX @ vB)                         # Y-XB
+    dS2 = (1 / (iN - iK)) * (vE.T @ vE)         # Sigma^2
+    mS2 = dS2 * np.linalg.inv(mX.T @ mX)        # Covariance matrix
+    vSE = np.sqrt(np.diagonal(mS2))             # Standard deviations of coefficients
+    
+    print('Vector of parameters : \n', vB, '\n Standard deviations: \n', vSE,
+          '\n Sigma is equal to: \n', np.sqrt(dS2))
+    
+    return
+
+
+###########################################################
+### GetPars(vP)
+def GetPars(vP):
+    """
+    Purpose:
+      Read out the parameters from the vector
+
+    Inputs:
+      vP        iK+1 vector with sigma and beta's
+
+    Return value:
+      dS        double, sigma
+      vBeta     iK vector, beta's
+    """
+    iK= np.size(vP)-1           
+    vP= vP.reshape(iK+1,)           # Force vP to be a 1D matrix
+    dS= vP[0]   
+    vBeta= vP[1:]
+
+    return (dS, vBeta)
+
+###########################################################
+### LnLRegr(vP, vY, mX)
+def LnLRegr(vP, vY, mX):
+    """
+    Purpose:
+        Compute log likelihood of regression model
+
+    Inputs:
+        vP      iK+1 1D-vector of parameters, with sigma and betas
+        vY      iN 1D-vector of data
+        mX      iN x iK matrix of regressors
+
+    Return value:
+        vLLN    iN vector containing the log-likelihoods
+    """
+    (iN, iK)= mX.shape
+    (dSigma, vBeta)= GetPars(vP)
+    vE= vY - ((mX@vBeta).reshape(-1,1))
+    vLLN= -0.5*(np.log(2*np.pi) + 2*np.log(dSigma) + np.square(vE/dSigma)) #LLik function
+    vLLN = vLLN.reshape(iN)         # Ensure vLLN has correct dimension
+
+    print (".", end="")             # Sign of life
+
+    return vLLN
+
+###########################################################
+### EstimateRegr(vP0, vY, mX)
+def EstimateRegr(vP0, vY, mX):
+    """
+    Purpose:
+      Estimate the regression model
+
+    Inputs:
+      vP0       iK+1 vector of initial parameters of sigma and betas
+      vY        iN vector of data
+      mX        iN x iK matrix of regressors
+
+    Return value:
+      vP        iK+1 vector of optimal parameters sigma and betas
+      vS        iK+1 vector of standard deviations
+      dLL       double, loglikelihood
+      sMess     string, output of optimization
+      mS2       iK+1 x iK+1 covariance matrix of the negative inverse of Hessian
+    """
+    (iN, iK)= mX.shape
+
+    # Create lambda function returning NEGATIVE AVERAGE LL, as function of vP only
+    AvgNLnLRegr= lambda vP: -np.mean(LnLRegr(vP, vY, mX), axis=0)
+
+    dLL= -iN*AvgNLnLRegr(vP0)                   # Python minimizes and scales differently, this fixes it
+    print ("Initial LL= ", dLL, "\nvP0=", vP0)
+
+    res= opt.minimize(AvgNLnLRegr, vP0, method="BFGS")  # Here, actual optimization takes place
+
+    vP= res.x                                   # Optimal parameters (theta_hat)
+    sMess= res.message
+    dLL= -iN*res.fun
+
+    mHn= -hessian_2sided(AvgNLnLRegr, vP)       # Hessian
+    mS2= np.linalg.inv(mHn)                     # H^-1
+    mS2s = -mS2/iN                              
+    
+    vS= np.sqrt(np.diag(mS2s))                  # Non-robust
+    
+    mG= jacobian_2sided(LnLRegr, vP, vY, mX)    # Jacobian
+    mGG = (mG.T @ mG) / iN                      # J'J / N
+    
+    mCovRobust = (-mS2) @ mGG @ (-mS2) / iN
+    vSrobust = np.sqrt(np.diag(mCovRobust))     # Robust
+    
+
+    print("\nBFGS results in ", sMess, "\nPars: ", vP, "\nStdev: ", vS, "\nLL= ", dLL, ", f-eval= ", res.nfev)
+    print("\n sizes of hessian and jacobian: \n", mHn.shape, mGG.shape)
+    print("\n The standard covariance matrix is = \n, ", mS2s, "\n Standar deviations: \n", vS)
+    print("\n And the covariance matrix, adjusted for robustness = \n", mCovRobust, "\n standard devs \n", vSrobust)
+
+    return (vP, vS, dLL, sMess, mS2)
+
+###########################################################
+### main()
+def main():
+    # Magic numbers
+    start= datetime.datetime(2000,1,1)          #start time
+    end= datetime.datetime(2021,9,13)           #end time 
+    n_Adj= 'Adj Close'
+    close= 'Close'
+    
+    
+    df= Get_data(start, end, n_Adj, close)
+    Return= Data_return(df)
+    OL(Return)
+    
+    vP0= [1,1,1]                                #dSigma and vBeta together
+    vP0= np.array(vP0)
+    
+    mX= np.hstack([np.ones((len(Return['mExcess']), 1)), np.array(Return['mExcess']).reshape(len(Return['mExcess']),1)])
+    vY= np.array(Return['sExcess']).reshape(len(Return['mExcess']),1)
+    
+    (vP, vS, dLnPdf, sMess, mS2)= EstimateRegr(vP0, vY, mX)
+
+###########################################################
+### start main
+if __name__ == "__main__":
+    main()
+
+
+# In[41]:
+
+#############################################################################
+################################ Student-t ##################################
+#############################################################################
+
+
+###########################################################
+### GetParsStT(vP)
+def GetParsStT(vP):
+    """
+    Purpose:
+      Read out the parameters from the vector
+
+    Inputs:
+      vP        iK+1 vector with sigma and beta's
+
+    Return value:
+      dS        double, sigma
+      vBeta     iK vector, beta's
+    """
+    iK= np.size(vP)-1
+    vP= vP.reshape(iK+1,)           # Force vP to be a 1D matrix
+    dS= vP[0]
+    vBeta= vP[1:3]
+
+    return (dS, vBeta)
+
+###########################################################
+### LnLRegrStT(vP, vY, mX)
+def LnLRegrStT(vP, vY, mX):
+    """
+    Purpose:
+        Compute log likelihood of regression model
+
+    Inputs:
+        vP      iK+1 1D-vector of parameters, with sigma and beta
+        vY      iN 1D-vector of data
+        mX      iN x iK matrix of regressors
+
+    Return value:
+        vLLT     iN vector, loglikelihood
+    """
+    (iN, iK)= mX.shape
+    (dSigma, vBeta)= GetParsStT(vP)
+    vE= vY - ((mX@vBeta).reshape(-1,1))
+    dS2= vP[0]
+    vLLT= st.t.logpdf(vE, df= vP[-1], scale= np.sqrt(dS2)) #LLik function for Student's T
+    vLLT = vLLT.reshape(iN)         # Ensure vLLT has correct dimension
+    
+
+    print (".", end="")             # Give sign of life
+
+    return vLLT
+
+###########################################################
+### EstimateRegrStT(vP0, vY, mX)
+def EstimateRegrStT(vP0, vY, mX):
+    """
+    Purpose:
+      Estimate the regression model
+
+    Inputs:
+      vY        iN vector of data
+      mX        iN x iK matrix of regressors
+
+    Return value:
+      vP        iK+1 vector of optimal parameters sigma and beta's
+      vS        iK+1 vector of standard deviations
+      dLL       double, loglikelihood
+      sMess     string, output of optimization
+      mS2       contriance, -H**-1
+    """
+    (iN, iK)= mX.shape
+
+    # Create lambda function returning NEGATIVE AVERAGE LL, as function of vP only
+    AvgNLnLRegr= lambda vP: -np.mean(LnLRegrStT(vP, vY, mX), axis=0)
+
+    dLL= -iN*AvgNLnLRegr(vP0)                           # Python minimizes and scales differently, this fixes it
+    print ("Initial LL= ", dLL, "\nvP0=", vP0)
+
+    res= opt.minimize(AvgNLnLRegr, vP0, method="BFGS")  # Actual optimization
+
+    vP= res.x                                           # Optimal parameters (theta_hat)
+    sMess= res.message
+    dLL= -iN*res.fun
+
+    mHn= -hessian_2sided(AvgNLnLRegr, vP)               # Hessian
+    mS2= np.linalg.inv(mHn)                             # H^-1
+    mS2s = -mS2/iN
+    
+    vS= np.sqrt(np.diag(mS2s))                          # Non-robust
+    
+    mG= jacobian_2sided(LnLRegrStT, vP, vY, mX)         # Jacobian
+    mGG = (mG.T @ mG) / iN                              # J'J / N
+    
+    mCovRobust = (-mS2) @ mGG @ (-mS2) / iN
+    vSrobust = np.sqrt(np.diag(mCovRobust))             # Robust
+    
+
+    print("\nBFGS results in ", sMess, "\nPars: ", vP, "\nStdev: ", vS, "\nLL= ", dLL, ", f-eval= ", res.nfev)
+    print("\n sizes of hessian and jacobian: \n", mHn.shape, mGG.shape)
+    print("\n The standard covariance matrix is = \n, ", mS2s, "\n Standar deviations: \n", vS)
+    print("\n And the covariance matrix, adjusted for robustness = \n", mCovRobust, "\n standard devs \n", vSrobust)
+
+
+    return (vP, vS, dLL, sMess, mS2)
+
+
+###########################################################
+### main
+def main():
+    # Magic numbers
+    start= datetime.datetime(2000,1,1)          #start time
+    end= datetime.datetime(2021,9,13)           #end time 
+    n_Adj= 'Adj Close'
+    close= 'Close'
+    
+    # Data is newly obtained in case that something was overwritten for the Normal Log-Likelihood
+    
+    df= Get_data(start, end, n_Adj, close)      
+    Return= Data_return(df)
+    
+    vP0= [1,1,1,1]                              #dSigma , vBeta and dNu together
+    vP0= np.array(vP0)
+    
+    mX= np.hstack([np.ones((len(Return['mExcess']), 1)), np.array(Return['mExcess']).reshape(len(Return['mExcess']),1)])
+    vY= np.array(Return['sExcess']).reshape(len(Return['mExcess']),1)
+    
+    (vP, vS, dLnPdf, sMess, mS2)= EstimateRegrStT(vP0, vY, mX)
+
+###########################################################
+### start main
+if __name__ == "__main__":
+    main()
+
