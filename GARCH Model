@@ -1,0 +1,1257 @@
+###############################################
+### import
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import os
+import statistics
+import math
+import sympy
+import scipy.stats as st
+import scipy.optimize as opt
+import scipy as sp
+from statsmodels.tsa.arima.model import ARIMA
+### Get hessian and related functions
+from lib.grad import *
+
+### Make class
+class cMaximizeLikelihood:
+    def __init__(self):
+            self.x0 = []
+            self.x = []
+            self.tx0 = []
+            self.tx = []
+            self.likelihoodvalue = []
+            self.tcovariancematrix = []
+            self.covariancematrix = []
+            self.standarderrors = []
+            self.tstandarderrors = []
+            self.filter = []
+            self.success = False
+            self.criteria = []
+
+
+###############################################
+### Computer_Return
+def Load_Data(sDataTest, sDataReal, lOrderTest, lOrderReal):
+    """
+    Purpose:
+        load holding period return from csv file, make 3-D matrix of returns
+    Inputs:
+        sDataTest            String, CRSP file name containing test data 
+        sDataReal            String, CRSP file name containing real data        
+        lOrderTest           List, containing order of companies for testing 
+        lOrderReal           List, containing order of companies for validating 
+    returns:
+        mReturn              iNxiKx2 matrix, first iN x iK is the returns for testing, the second iN x iK is the returns 
+                             for validating
+    """
+    dftest = pd.read_csv(sDataTest)
+    dfreal = pd.read_csv(sDataReal)
+    lCompanyTest = np.unique(dftest['TICKER'])
+    lCompanyReal = np.unique(dfreal['TICKER'])
+    iK = len(lCompanyTest)
+    iN = len(dftest[dftest['TICKER'] == lCompanyTest[0]]['RET'])
+    mReturn = np.zeros((iN, iK, 2))
+    
+    lCompTestSort = np.zeros_like(lCompanyTest)
+    lCompRealSort = np.zeros_like(lCompanyReal)
+    
+    for i in range(iK):
+        mReturn[:, i, 0] = dftest[dftest['TICKER'] == lCompanyTest[lOrderTest[i]]]['RET']
+        mReturn[:, i, 1] = dfreal[dfreal['TICKER'] == lCompanyReal[lOrderReal[i]]]['RET']
+        lCompTestSort[i] = lCompanyTest[lOrderTest[i]]
+        lCompRealSort[i] = lCompanyReal[lOrderReal[i]]
+        
+        
+    vDates = dftest['date'][:iN]
+    vDates = pd.to_datetime(vDates, format = '%Y%m%d')
+    
+    return mReturn, lCompTestSort, lCompRealSort, vDates
+
+###############################################
+### gragh()
+def Graph_Return(mReturn, lCompany, vDates):
+    """
+    Purpose:
+        Plot the return data 
+    Inputs:
+        mReturn             iN x iK x 2 matrix, first iN x iK is the returns for testing, the second iN x iK is the returns 
+                            for validating            
+        lCompanytest            String, CRSP file name containing real data        
+        lCompanyreal           List, containing order of companies for testing 
+        lOrdertest           List, containing order of companies for validating 
+        lOrderreal
+    returns:             
+    """
+    iN, iK = mReturn.shape
+
+    fig, ax = plt.subplots(iK, 1, figsize=(15,10))
+    for i in range(iK):
+        ax[i].plot(vDates, mReturn[:, i], c="r", label=lCompany[i])
+        ax[i].legend()
+        ax[i].set_xlabel('Date')
+        ax[i].set_ylabel("Holding period return")
+    plt.show()
+        
+    return 
+
+###########################################################
+### mStats = DescriptiveStats(mLogRet)
+def DescriptiveStats(mLogRet, lCompany):
+    """
+    Purpose:  
+        Provide descriptive statistics for the three series of log returns
+        
+    Inputs:
+        mLogRet         iN x iK matrix containing log returns
+
+    Return values:
+        mStats          9 x 1+iK matrix, first column values are category names
+    """
+    lStats = ['num obs', 'mean', 'median', 'stdev', 'skew', 'kurt', 'min', 'max']
+    iN, iK = mLogRet.shape
+    
+    mStats = np.zeros((len(lStats)+1, iK+1), dtype=object)
+    mStats[:] = np.nan
+    mStats[1:,0] = lStats
+    mStats[0,1:] = lCompany
+    
+    for i in range(iK):
+        mStats[1,i+1] = len(mLogRet[:,i])
+        mStats[2,i+1] = np.mean(mLogRet[:,i])
+        mStats[3,i+1] = np.median(mLogRet[:,i])
+        mStats[4,i+1] = np.std(mLogRet[:,i])
+        mStats[5,i+1] = st.skew(mLogRet[:,i])
+        mStats[6,i+1] = st.kurtosis(mLogRet[:,i], fisher=False)
+        mStats[7,i+1] = np.min(mLogRet[:,i])
+        mStats[8,i+1] = np.max(mLogRet[:,i])
+
+    return mStats
+
+
+###########################################################
+### mStats = DescriptiveStats(mLogRet)
+def GarchFilter(vData, dOmega, dAlpha, dBeta, dDelta, dLambda, dMu, dSigma2):
+    """
+    Purpose:
+        Compute the vector of loglikelihood values for the univariate garch model.
+        Where the parameters are given by:
+            Omega | Alpha | Beta | Lambda | Mu | (Delta)
+    Inputs:
+        vData                   Vector, iT x 1. Containing the time series
+        dOmega      Double, value of Omega
+        dAlpha      Double, value of Alpha
+        dBeta       Double, value of Beta
+        dDelta      Double, value of Delta
+        dLambda     Double, value of Lambda
+        dMu         Double, value of Mu
+        dSigma2                 Double, Initial value of sigma2
+    Returns:
+        vVariances,             Vector, iT x 1. Containing the time varying variances of the model
+        vLikelihoodValues       Vector, iT x 1. Containing the loglikelihood values
+    """
+    
+    # initialize sizes and formats
+    iT = vData.shape[0]
+    vVariances = np.zeros(iT)
+    vLikelihoodValues = np.ones(iT)
+    
+    # Compute disturbances
+    vE = vData - dMu
+    # Create indicator function
+    vI = np.zeros(iT,dtype=bool)
+    
+    # filter variances and compute likelihood contributions by
+    # a loop over the observations
+    for i1 in range(iT):
+        
+        # update filtered variances
+        vVariances[i1] = dSigma2
+        # Indicator function
+        if vData[i1] < 0:
+            vI[i1] = True
+        
+        # compute the likelihood contribution
+        vLikelihoodValues[i1] = -0.5 * np.log(1 + ( vE[i1]*vE[i1] ) / (dLambda * dSigma2)) * (dLambda + 1) - 0.5 * np.log(dSigma2)
+        #vLikelihoodValues[i1] = -0.5*np.log(dSigma2) - 0.5*vE[i1]*vE[i1]/dSigma2
+        
+        if math.isnan(vLikelihoodValues[i1]) == True:
+            vLikelihoodValues = -1000000
+            print('nan found, setting likelihood to:', vLikelihoodValues)
+            return 0, vLikelihoodValues
+        # update the filter
+        dSigma2 = dOmega + ( dBeta + ( ( dAlpha * (vE[i1] * vE[i1]) + dDelta * vE[i1] * vE[i1] * vI[i1]) / ( dSigma2 + dLambda**(-1) * vE[i1] * vE[i1] ) ) ) * dSigma2
+        # dSigma2 = dOmega + dBeta * dSigma2 + dAlpha * vData[i1] * vData[i1]
+        
+    # add likelihood constants
+    #vLikelihoodValues = vLikelihoodValues - 0.5 * np.log(2*np.pi)
+    vLikelihoodValues = vLikelihoodValues + sp.special.loggamma((dLambda + 1)/2) - sp.special.loggamma(dLambda / 2) - 0.5 * np.log(np.pi * dLambda)
+
+        
+        
+    # return filtered variances and likelihood values
+    return (vVariances, vLikelihoodValues)
+
+###########################################################
+### cMaxLikelihood = MaxLikelihood(vData)
+def MaxLikelihoodUGARCH(vData, iK, bDelta = True):
+    """
+    Purpose:
+        To compute the maximum likelihood of the univariate GARCH model.
+        Information is stored in cMaximumlikelihood class.
+        Where the parameters are given by:
+            Omega | Alpha | Beta | Lambda | Mu | (Delta)
+    Inputs:
+        vData           iT x 1. Vector containing the data of the time series.
+        iK              Integer, denotes the amount of parameters to be estimated.
+        bDelta          boolean, true if delta should be included in the model
+    Returns:
+        cReturnValue    Class object containing all information about the estimation
+    """
+    ###########################################################
+    ### cMaxLikelihood = MaxLikelihood(vData)
+    def Objective(vTheta, bForAllT=False):
+        """
+        Purpose:
+            Local objective function for the univariate garch model.
+            Parameters MUST be given in the correct order:
+                Omega | Alpha | Beta | Lambda | Mu | (Delta)
+        Inputs:
+            vTheta      Vector, containing the parameters of interest.
+            bForAllT    Boolean, True if the vector of likelihoods must be return. False for average negative log likelihood.
+        Returns:
+            dObjValue   Vector or Double, containin the vector of loglikelihood values or the average negative log likelihood.
+        """
+        # initialize the parameter values
+        vTranspar = ParameterTransform(vTheta)
+        dOmega = vTranspar[0]
+        dAlpha = vTranspar[1]
+        dBeta = vTranspar[2]
+        dLambda = vTranspar[3]
+        dMu = vTranspar[4]
+        if bDelta is True:
+            dDelta = vTranspar[5]
+        else:
+            dDelta = 0
+        
+        dSigma2 = (np.var(vData[0:50]) * (dLambda-2)) / dLambda
+        # dSigma2 = (np.var(vData) * (dLambda-2)) / dLambda
+
+    
+        # run the filter
+        vVariances, vLikelihoodValues = GarchFilter(vData, dOmega, dAlpha, dBeta, dDelta, dLambda, dMu, dSigma2)
+        if (bForAllT == True):
+            dObjValue = vLikelihoodValues.reshape(-1,)
+        else:
+            dObjValue = -np.mean(vLikelihoodValues)
+        cReturnValue.filter = vVariances
+        
+        return dObjValue
+    ###########################################################
+    ### cMaxLikelihood = MaxLikelihood(vData)
+    def ComputeCovarianceMatrix(vTheta):
+        """
+        Purpose:
+            Local covariance matrix function to compute the covariance matrix for the univariate garch model
+            Parameters MUST be given in the correct order:
+                Omega | Alpha | Beta | Lambda | Mu | (Delta)
+        Inputs:
+            vTheta      Vector, containing the parameters of interest.
+        Returns:
+            mCov        Matrix, iK x iK containing the covariance matrix of the parameters of the univariate garch
+        """
+        # compute the inverse hessian of the average log likelihood
+        mH= hessian_2sided(Objective, vTheta)
+        # print(mH)
+        mCov = np.linalg.inv(mH)
+        mCov = (mCov +  mCov.T)/2       #  Force to be symmetric
+        # compute the outer product of gradients of the average log likelihood
+        mG = jacobian_2sided(Objective, vTheta, True)
+        # mG = jacobian_2sided(Objective, vTheta)
+        # print(mG)
+        mG = np.dot(mG.T, mG) / vData.shape[0]
+        mG = np.dot(mG, mCov)
+        mCov = np.dot(mCov, mG) / vData.shape[0]
+        return mCov
+    
+    ###############################################
+    ### main()
+    def ParameterTransform(vTheta):
+        """
+        Purpose:
+            To transform the parameters for the univariate garch model such that they are restricted:
+                Omega > 0
+                Alpha > 0
+                Beta > 0 & < 1
+            Parameters MUST be given in the correct order:
+                    Omega | Alpha | Beta | Lambda | Mu | (Delta)
+            Outputs the true vector of parameters
+        Inputs:
+            vTheta                  Vector, containing the transformed parameters of interest
+        Returns:
+            vTranspar               Vector, containing the true parameters.
+        """
+        vTranspar = np.copy(vTheta)
+        vTranspar[0] = np.exp(vTheta[0])
+        vTranspar[1] = 1/(1+np.exp(-vTheta[1]))
+        vTranspar[2] = 1/(1+np.exp(-vTheta[2]))
+        vTranspar[3] = np.exp(vTheta[3])
+        if bDelta is True:
+            vTranspar[5] = -1 + 2 * (1 + np.exp(-vTheta[5])) **(-1)
+        
+
+        return vTranspar
+    
+    ###############################################
+    ### main()
+    def CalculateCriteria(dLL):
+        """
+        Purpose:
+            To transform the parameters for the univariate garch model such that they are restricted:
+                Omega > 0
+                Alpha > 0
+                Beta > 0 & < 1
+            Parameters MUST be given in the correct order:
+                    Omega | Alpha | Beta | Lambda | Mu | (Delta)
+            Outputs the true vector of parameters
+        Inputs:
+        Returns:
+        """
+        dLL = -dLL
+        dAIC= 2*iK - 2*dLL
+        dAICc= dAIC + ((2*iK**2 + 2*iK)/(iT-iK-1))
+        dBIC= iK*np.log(iT) - 2*dLL
+
+        return (dAIC, dAICc, dBIC)
+    
+    # initialize starting values and return value
+    cReturnValue = cMaximizeLikelihood()
+    vTheta = np.ones(iK)
+    
+    iT = vData.shape[0]
+    
+    # New order: Omega, Alpha, Beta, Lambda, Mu, Delta
+    
+    # vTheta[0] = np.log(np.var(vData) * (1 - 0.98))
+    vTheta[0] = np.log(np.var(vData[:50])/50)
+    vTheta[1] = np.log(0.02/(1-0.02))
+    vTheta[2] = np.log(0.96/(1-0.96))
+    vTheta[3] = np.log(5)
+    vTheta[4] = np.mean(vData)
+    vTheta[5] = np.log(4)
+    
+    if bDelta is False:
+        vTheta = vTheta[:-1]
+        iK = iK-1
+
+    # vTheta = np.log(vTheta)
+    cReturnValue.x0 = vTheta
+    cReturnValue.tx0 = ParameterTransform(vTheta)
+
+    
+    # do the optimization
+    tSol = opt.minimize(Objective, vTheta, method='BFGS', options={'disp': True, 'maxiter':250})
+    cReturnValue.success = tSol['success']
+
+    # check for success and store results
+    if (tSol['success'] != True):
+        print("*** no true convergence: ",tSol['message'])
+    else:
+        cReturnValue.x = tSol['x']
+        cReturnValue.tx = ParameterTransform(cReturnValue.x)
+        cReturnValue.likelihoodvalue = -iT * tSol['fun']
+        cReturnValue.criteria = CalculateCriteria(cReturnValue.likelihoodvalue)
+        cReturnValue.covariancematrix = ComputeCovarianceMatrix(cReturnValue.x)
+        # mJ = jacobian_2sided(ParameterTransform, cReturnValue.x, True)
+        mJ = jacobian_2sided(ParameterTransform, cReturnValue.x)
+        cReturnValue.tcovariancematrix = np.dot(mJ, np.dot(cReturnValue.covariancematrix, mJ.T))
+        cReturnValue.standarderrors = np.sqrt(np.diag(cReturnValue.covariancematrix))
+        cReturnValue.tstandarderrors = np.sqrt(np.diag(cReturnValue.tcovariancematrix))
+            
+    
+    return cReturnValue
+
+###############################################
+### GenerateGarch()
+def GenerateGarch(iT, dOmega, dAlpha, dBeta ,dDelta, dLambda, dMu, dSigma2):
+    """
+    Purpose:
+        To generate a GARCH process in order to test whether our garch code works.
+
+    Inputs:
+        iT          Integer, Number of observations in the time series
+        dOmega      Double, value of Omega
+        dAlpha      Double, value of Alpha
+        dBeta       Double, value of Beta
+        dDelta      Double, value of Delta
+        dLambda     Double, value of Lambda
+        dMu         Double, value of Mu
+        dSigma2     Double, Initial value of sigma2
+    Returns:
+        vData       Vector, containing the simulated time series
+        vVariances  Vector, containint the time varying variances of vData
+    """
+    
+    # initialize formats
+    vVariances = np.zeros(iT)
+    vData = np.zeros(iT)
+    vE = np.zeros(iT)
+    vI = np.zeros(iT,dtype=bool)
+    
+    # loop over observations
+    for i in range(iT):
+        vData[i] = dMu + np.sqrt(dSigma2) * np.random.standard_t(dLambda)
+        
+        vE[i] = vData[i] - dMu
+        if vData[i] < 0:
+            vI[i] = True
+        vVariances[i] = dSigma2
+        dSigma2 = dOmega + ( dBeta + ( ( dAlpha * vE[i] * vE[i] + dDelta * vE[i] * vE[i] * vI[i]) / ( dSigma2 + dLambda**(-1) * vE[i] * vE[i] ) ) ) * dSigma2
+        #dSigma2 = dOmega + dBeta * dSigma2 + dAlpha * vData[i] * vData[i]
+        
+    # return series and variances
+    return (vData , vVariances, vI, vE)
+
+###############################################
+### GenerateGarch()
+def NewsImpactCurve(dOmega, dAlpha, dBeta ,vDelta, vLambda, dMu, dSigma2, vE):
+    """
+    Purpose:
+        Calculate the News Impact Curve for a given set of parameters and
+        error terms, with varying values for lambda and delta. Furthermore,
+        the function will plot the results.
+        
+    Inputs:
+        dOmega          Double, value of Omega
+        dAlpha          Double, value of Alpha
+        dBeta           Double, value of Beta
+        vDelta          Vector, values of Delta
+        vLambda         Vector, values of Lambda
+        dMu             Double, value of Mu
+        dSigma2         Double, Initial value of sigma2
+        vE              Vector, values of 'news' factor
+    """
+    iT = vE.shape[0]
+    iD = len(vDelta)
+    iL = len(vLambda)
+    
+    vSigma2 = np.zeros((iT,iD,iL))
+    vI = np.zeros(iT,dtype=bool)
+    
+    # fig, ax = plt.subplots(4, 1, figsize=(15,10))
+    fig, ax = plt.subplots(2, 2, figsize=(15,10))
+    n=0
+    m=0
+    for j,dDelta in enumerate(vDelta):
+        for i,dLambda in enumerate(vLambda):
+            for t in range(iT):
+                if vE[t] < 0:
+                    vI[t] = True
+                vSigma2[t,i,j] = dOmega + ( dBeta + ( ( dAlpha * vE[t] * vE[t] + dDelta * vE[t] * vE[t] * vI[t]) / ( dSigma2 + dLambda**(-1) * vE[t] * vE[t] ) ) ) * dSigma2
+            # ax[j].plot(vE,vSigma2[:,i,j])
+            ax[n,m].plot(vE,vSigma2[:,i,j], label = 'Lambda={}'.format(vLambda[i]))
+        ax[n,m].legend(loc = 'upper center')
+        ax[n,m].title.set_text('Delta={}'.format(vDelta[j]))
+        ax[n,m].set_xlabel('News Magnitude')
+        ax[n,m].set_ylabel('News Impact Magnitude')
+        m += 1
+        if m > 1:
+            n += 1
+            m = 0
+    fig.tight_layout(pad=1.5)
+    fig.savefig('NIC.jpeg')
+    fig.show()
+    
+###############################################
+### GenerateGarch()
+def EstUniGARCH(mReturn, iLen, iK, bTest):
+    """
+    Purpose:
+        Estimate various GARCH models through maximum likelihood: for three
+        stocks, and for every stock with and without a delta factor.
+        
+    Inputs:
+        mReturn          iT x iNstocks x 2 matrix containing stock data for
+                         iNstocks per third dimension, where we have that [:,:,0]
+                         contains the test stocks and [:,:,1] contains the assignment
+                         stocks.
+        iLen             Integer, index at which to begin/end the series
+        iK               Integer, number of parameters
+        bTest            Boolean, ==True when test stocks should be used.
+    """
+    
+    iTest = 1
+    if bTest is True:
+        iTest = 0
+    
+    c1tD = MaxLikelihoodUGARCH(mReturn[:iLen,0,iTest], iK)
+    c1tnD = MaxLikelihoodUGARCH(mReturn[:iLen,0,iTest], iK, False)
+    c2tD = MaxLikelihoodUGARCH(mReturn[:iLen,1,iTest], iK)
+    c2tnD = MaxLikelihoodUGARCH(mReturn[:iLen,1,iTest], iK, False)
+    c3tD = MaxLikelihoodUGARCH(mReturn[:iLen,2,iTest], iK)
+    c3tnD = MaxLikelihoodUGARCH(mReturn[:iLen,2,iTest], iK, False)
+    
+    return c1tD, c1tnD, c2tD, c2tnD, c3tD, c3tnD
+
+###############################################
+### GenerateGarch()
+def NIC_FVplot(mReturn, tClasses, vDates, lFormat, bTest, vE):
+    """
+    Purpose: 
+        Create graphs containing news impact curves and filtered volatility
+        for various stocks in a single figure.
+        
+    Inputs:
+        mReturn         iT x iNstocks x 2 matrix containing stock data for
+                        iNstocks per third dimension, where we have that [:,:,0]
+                        contains the test stocks and [:,:,1] contains the assignment
+                        stocks.
+        tClasses        Tuple, contains classes with information on every model 
+        vDates          Vector, contains dates
+        lFormat         Tuple, 2 dimensions where the first dimension contains
+                        the stock names and the second the model names
+        bTest           Boolean, ==True when test stocks should be used.
+        vE              Vector, values of 'news' factor
+    """
+    
+    iTest = 1
+    if bTest is True:
+        iTest = 0
+    
+    iM = len(tClasses)
+    iT = vE.shape[0]
+    k = 0
+    l = 0
+    fig, ax = plt.subplots(3, 2, figsize=(15,10))
+    
+    for m in range(iM):
+        vSigma2 = np.zeros(iT)
+        vI = np.zeros(iT,dtype=bool)
+        vTheta = tClasses[m].tx
+        iK = vTheta.shape[0]
+        dOmega = vTheta[0]
+        dAlpha = vTheta[1]
+        dBeta = vTheta[2]
+        dLambda = vTheta[3]
+        dMu = vTheta[4]
+        if iK == 6:
+            dDelta = vTheta[5]
+        else:
+            dDelta = 0
+        dSigma2 = (np.var(mReturn[:50,k,iTest]) * (dLambda-2)) / dLambda
+        (vVariances, vLikelihoodValues) = GarchFilter(mReturn[:,k,iTest], dOmega, dAlpha, dBeta, dDelta, dLambda, dMu, dSigma2)
+        ax[k,1].plot(vDates,vVariances, label = 'Robust GARCH-model {}'.format(lFormat[1][l]))
+        ax[k,1].axvline(x=vDates[2500], color='r', linestyle='--')
+        ax[k,1].legend(loc = 'upper center')
+        ax[k,1].title.set_text('Company: {}'.format(lFormat[0][k]))
+        ax[k,1].set_xlabel('Time')
+        ax[k,1].set_ylabel('Volatility')
+        
+        dSigma2NIC = tClasses[m].filter[-1]       
+        for t in range(iT):
+            if vE[t] < 0:
+                vI[t] = True
+            vSigma2[t] = dOmega + ( dBeta + ( ( dAlpha * vE[t] * vE[t] + dDelta * vE[t] * vE[t] * vI[t]) / ( dSigma2NIC + dLambda**(-1) * vE[t] * vE[t] ) ) ) * dSigma2NIC
+        ax[k,0].plot(vE,vSigma2[:], label = 'Robust GARCH-model {}'.format(lFormat[1][l]))
+        ax[k,0].legend(loc = 'upper center')
+        ax[k,0].title.set_text('Company: {}'.format(lFormat[0][k]))
+        ax[k,0].set_xlabel('News Magnitude')
+        ax[k,0].set_ylabel('News Impact Magnitude')
+        
+        l += 1
+        if l > 1:
+            l=0
+            k+=1
+
+    fig.tight_layout(pad=1.5)
+    fig.show()        
+    
+    return 
+
+###############################################
+### GenerateGarch()
+def ValueAtRisk(mReturn, tClasses, iH, vAlphas, bTest, iLenVaR, iNsim, lHvals):
+    """
+    Purpose:
+        Calculate the Value at Risk for various values of H and with various
+        values of the confidence level Alpha.
+        
+    Inputs:
+        mReturn         iT x iNstocks x 2 matrix containing stock data for
+                        iNstocks per third dimension, where we have that [:,:,0]
+                        contains the test stocks and [:,:,1] contains the assignment
+                        stocks.
+        tClasses        Tuple, contains classes with information on every model 
+        iH              Integer, max forecast horizon
+        vAlphas         Vector, the alphas with which to calculate the VaR
+        iLenVaR         Integer, index from which to forecast
+        iNsim           Integer, number of simulations
+        lHvals          List, h-values for which forecasts are made
+        
+    Return values:
+        mVaR            len(lHvals) x len(vAlphas) x len(tClasses) matrix,
+                        contains all VaR values for all alphas, h-values and
+                        models
+    """
+    iTest = 1
+    if bTest is True:
+        iTest = 0
+    
+    k = 0
+    l = 0
+    
+    iM = len(tClasses)
+    mVaR = np.zeros((4,len(vAlphas),len(tClasses)))
+    
+    for m in range(iM):
+        mSigma2 = np.zeros((iH+1, iNsim))
+        mI = np.zeros((iH, iNsim),dtype=bool)
+        mX = np.zeros((iH+1, iNsim))
+        
+        vTheta = tClasses[m].tx
+        iK = vTheta.shape[0]
+        dOmega = vTheta[0]
+        dAlpha = vTheta[1]
+        dBeta = vTheta[2]
+        dLambda = vTheta[3]
+        dMu = vTheta[4]
+        if iK == 6:
+            dDelta = vTheta[5]
+        else:
+            dDelta = 0
+        dSigma2 = (np.var(mReturn[:50,k,iTest]) * (dLambda-2)) / dLambda
+        (vVariances, vLikelihoodValues) = GarchFilter(mReturn[:iLenVaR,k,iTest], dOmega, dAlpha, dBeta, dDelta, dLambda, dMu, dSigma2)
+        mSigma2[0,:] = vVariances[-1]
+        
+        mEps = np.random.standard_t(dLambda,(iH,iNsim))
+        
+        mE = np.zeros((iH+1, iNsim))
+        mE[0,:] = mReturn[iLenVaR,k,iTest]-dMu
+        mX[0,:] = mReturn[iLenVaR,k,iTest]
+        mCompoundRet = np.zeros((iH+1,iNsim))
+        mCompoundRet[0,:] = mX[0,:]
+
+        for n in range(iNsim):
+            for h in range(iH):
+                if mX[h,n] < 0:
+                    mI[h,n] = True
+    
+                mSigma2[h+1,n] = dOmega + ( dBeta + ( ( dAlpha * mE[h,n] * mE[h,n] + dDelta * mE[h,n] * mE[h,n] * mI[h,n]) / ( mSigma2[h,n] + dLambda**(-1) * mE[h,n] * mE[h,n] ) ) ) * mSigma2[h,n]
+                mX[h+1,n] = dMu + np.sqrt(mSigma2[h+1,n])*mEps[h,n]
+                mE[h+1,n] = mX[h+1,n] - dMu
+                mCompoundRet[h+1,n] = ((1+mX[h+1,n]/100)*(1+mCompoundRet[h,n]/100)-1)*100
+                
+        for h, hval in enumerate(lHvals):
+            vRetSort = np.sort(mCompoundRet[hval,:])
+            for a, aval in enumerate(vAlphas):
+                mVaR[h,a,m] = np.quantile(vRetSort, aval/2)
+        
+        l += 1
+        if l > 1:
+            l=0
+            k+=1
+        print('Model ', m, 'done estimating')
+    
+    return mVaR
+
+###############################################
+### GenerateGarchMV()
+def GenerateGarchMV(iT, iK, mOmega, mAlpha, dBeta, dLambda, mCov):
+    """
+    Purpose:
+        
+    Inputs:
+        iT                      Integer, indicating the length of the simulated series
+        iK                      Integer, the dimensions of the simulated series
+        mOmega                  Matrix, containing the omega matrix
+        mAlpha                  Matrix, containing the Alpha matrix
+        dBeta                   Double, Beta coefficient
+        dLambda                 Double, Lambda coefficient (Degrees of freedom)
+        mCov                    Matrix, Initial value of the scaling parameter
+    Returns:
+        mData                   Matrix, simulated iT,iK time series
+        mVar                    Matrix, time varying variance of the time series
+    """
+    # initialize formats
+    mVar = np.zeros((iK,iK,iT))
+    mData = np.zeros((iT,iK))
+    
+    for i in range(iT):
+        mVar[:,:,i] = mCov
+        mData[i,:] = np.random.standard_t(dLambda, iK) @ mCov
+
+        mCovi = np.linalg.inv(mCov)
+        vE = mData[i,:].reshape(1,-1).T
+        mCov = (1-dBeta)*mOmega + mAlpha @ (((vE @ vE.T) / (1 + (vE.T @ mCovi @ vE)/dLambda)) - mCov) @ mAlpha.T + dBeta * mCov 
+    # return series and variances
+    return mData, mVar
+
+###########################################################
+### GarchFilterMV
+def GarchFilterMV(mData, mOmega, mAlpha, dBeta, dLambda, mCov):
+    """
+    Purpose:
+        To compute the GARCH filter equation of the robust multivariate GARCH model with a student t distribution
+        Parameters MUST be given in the correct order:
+                Lambda | Beta | Alpha 
+    Inputs:
+        mData                   Matrix, containing the (demeaned) returns
+        mOmega                  Matrix, containing the omega matrix
+        mAlpha                  Matrix, containing the Alpha matrix
+        dBeta                   Double, Beta coefficient
+        dLambda                 Double, Lambda coefficient (Degrees of freedom)
+        mCov                    Matrix, Initial value of the scaling parameter
+    Returns:
+        mVar                    Matrix, with the estimated variance up and including T+1 forecast
+        vLikelihoodValues       Vector, containing the loglikelihood values
+        
+    """
+    # initialize sizes and formats    
+    iT, iK = mData.shape
+    mVar = np.zeros((iK,iK,iT+1))
+    vLikelihoodValues = np.ones(iT)
+    mVar[:,:,0] = mCov
+        
+    # filter variances and compute likelihood contributions by
+    # a loop over the observations
+    for i1 in range(1, iT+1):
+        
+        # update filtered variances
+        #mVar[:,:,i1] = mCov
+        mCovi = np.linalg.inv(mCov)
+        vE = mData[i1-1,:].reshape(1,-1).T
+        
+        # compute the likelihood contribution
+        vLikelihoodValues[i1-1] = -0.5 * np.log(np.linalg.det(mCov)) - 0.5 * np.log(1 + ((vE.T @ mCovi @ vE)/dLambda)) * (dLambda+iK)
+        
+        if math.isnan(vLikelihoodValues[i1-1]) == True:
+            vLikelihoodValues = -1000000
+            print('nan found, setting likelihood to:', vLikelihoodValues)
+            return 0, vLikelihoodValues
+        
+        # update the filter
+        # mCov = (1-dBeta)*mOmega + mAlpha @ (((mAlpha @ vE @ vE.T @ mAlpha.T) / (1 + (vE.T @ mCovi @ vE)/dLambda)) - mCov) + dBeta * mCov 
+        mCov = (1-dBeta) * mOmega + mAlpha @ (((vE @ vE.T) / (1 + ((vE.T @ mCovi @ vE)/dLambda))) - mCov) @ mAlpha.T + dBeta * mCov 
+        mVar[:,:,i1] = mCov
+    # add likelihood constants
+    vLikelihoodValues = vLikelihoodValues + sp.special.loggamma((dLambda + iK)/2) - sp.special.loggamma(dLambda / 2) - (iK/2) * np.log(np.pi * dLambda)
+
+    # print('.') # Sign of life per iteration
+
+    # return filtered variances and likelihood values
+    return (mVar, vLikelihoodValues)
+
+###########################################################
+### cMaxLikelihood = MaxLikelihood(vData)
+def MaxLikelihoodGARCH_MV(mData, sAlphaType):
+    """
+    Purpose:
+        To compute the maximum likelihood of the multivariate GARCH model.
+        Information is stored in cMaximumlikelihood class.
+        Where the parameters are given by:
+            Lambda | Beta | Alpha 
+    
+    Inputs:
+        mData           iT x iK vector, contains the data of the time series.
+        sAlphaType      String, denotes the type of alpha to be used. Options are:
+                        'scalar' - uses a double multiplied by the identity matrix
+                        'diagonal' - has diagonal matrix with 0 off-diagonal
+                        'lower triangular' - allows for off-diagonal elements
+    
+    Returns:
+        cReturnValue    Class object containing all information about the estimation
+    """
+    ###########################################################
+    ### cMaxLikelihood = MaxLikelihood(vData)
+    def Objective(vTheta, bForAllT=False):
+        """
+        Purpose:
+            Local objective function for the univariate garch model.
+            Parameters MUST be given in the correct order:
+                Lambda | Beta | Alpha 
+        
+        Inputs:
+            vTheta      Vector, containing the parameters of interest.
+            bForAllT    Boolean, True if the vector of likelihoods must be return. False for average negative log likelihood.
+        
+        Returns:
+            dObjValue   Vector or Double, containin the vector of loglikelihood values or the average negative log likelihood.
+        """
+        # initialize the parameter values
+        vTranspar = ParameterTransform(vTheta)
+        dLambda = vTranspar[0]
+        dBeta = vTranspar[1]
+        mAlpha = np.diag(vTranspar[2:iKa+2])
+        if sAlphaType == 'lower triangular':
+            for k, offdiag in enumerate(vTranspar[iKa+2:]):
+                iL=k
+                for l in range(iL):
+                    mAlpha[k,l] = vTranspar[1+iKa+k+l]
+        
+        if sAlphaType == 'scalar':
+            mAlpha = mAlpha * np.eye(iKk)
+
+        mCov = (np.cov(mDataDM[0:50,:].T, bias=True) * (dLambda-2)) / dLambda
+        # mCov = np.cov(mDataDM[0:50,:].T, bias=True)
+        mOmega = (np.cov(mDataDM.T, bias=True) * (dLambda-2)) / dLambda
+        # mOmega = np.cov(mDataDM.T, bias=True)
+
+    
+        # run the filter
+        mVar, vLikelihoodValues = GarchFilterMV(mDataDM, mOmega, mAlpha, dBeta, dLambda, mCov)
+        
+        # Give sign of life
+        print(".")
+        if (bForAllT == True):
+            dObjValue = vLikelihoodValues
+        else:
+            dObjValue = -np.mean(vLikelihoodValues)
+        cReturnValue.filter = mVar
+        
+        return dObjValue
+    ###########################################################
+    ### cMaxLikelihood = MaxLikelihood(vData)
+    def ComputeCovarianceMatrix(vTheta):
+        """
+        Purpose:
+            Local covariance matrix function to compute the covariance matrix for the univariate garch model
+            Parameters MUST be given in the correct order:
+                Lambda | Beta | Alpha 
+        
+        Inputs:
+            vTheta      Vector, containing the parameters of interest.
+        
+        Returns:
+            mCov        Matrix, iK x iK containing the covariance matrix of the parameters of the univariate garch
+        """
+        # compute the inverse hessian of the average log likelihood
+        mH= hessian_2sided(Objective, vTheta)
+        # print(mH)
+        mCov = np.linalg.inv(mH)
+        mCov = (mCov +  mCov.T)/2       #  Force to be symmetric
+        # compute the outer product of gradients of the average log likelihood
+        mG = jacobian_2sided(Objective, vTheta, True)
+        # mG = jacobian_2sided(Objective, vTheta)
+        mG = np.dot(mG.T, mG) / mDataDM.shape[0]
+        mG = np.dot(mG, mCov)
+        mCov = np.dot(mCov, mG) / mDataDM.shape[0]
+        return mCov
+    
+    ###############################################
+    ### main()
+    def ParameterTransform(vTheta):
+        """
+        Purpose:
+            To transform the parameters for the univariate garch model such that they are restricted:
+                Lambda > 0
+                0 < Beta < 1
+            Parameters MUST be given in the correct order:
+                    Lambda | Beta | Alpha (diag) | Alpha (off-diag)
+            Outputs the true vector of parameters
+        
+        Inputs:
+            vTheta                  Vector, containing the transformed parameters of interest
+        
+        Returns:
+            vTranspar               Vector, containing the true parameters.
+        """
+        vTranspar = np.copy(vTheta)
+        vTranspar[0] = np.exp(vTheta[0])
+        vTranspar[1] = 1/(1+np.exp(-vTheta[1]))
+        for k in range(iKa):
+            vTranspar[2+k] = 1/(1+np.exp(-vTheta[2+k]))
+        for k in range(2+iKa,int(iK)):
+            vTranspar[k] = (1/3) * (-1 + (2/(1+np.exp(-vTheta[k]))))
+        return vTranspar
+    
+    ###############################################
+    ### main()
+    def CalculateCriteria(dLL):
+        """
+        Purpose:
+            Calculate various information criteria to be able to rank
+            the various models.
+            
+        Inputs:
+            dLL         Double, log likelihood value at optimization
+            
+        Returns:
+            dAIC        Double, Akaike's Information Criterion
+            dAICc       Double, Akaike's Information Criterion (Corrected)
+            dBIC        Double, Bayesian Information Criterion
+    
+        """
+        dLL = -dLL
+        dAIC= 2*iK - 2*dLL
+        dAICc= dAIC + ((2*iK**2 + 2*iK)/(iT-iK-1))
+        dBIC= iK*np.log(iT) - 2*dLL
+        
+        # Likelihoodratio test
+
+        return (dAIC, dAICc, dBIC)
+    
+    # initialize starting values and return value
+    cReturnValue = cMaximizeLikelihood()
+    iT, iKk = mData.shape
+    iKa = iKk       # amount of diagonal elemens in alpha
+    
+    # mDataDM = mData - np.mean(mData, axis=0)          # Demeaning data
+    mDataDM = np.copy(mData)                        # Demeaning data
+    
+    if sAlphaType == 'scalar':
+        iK = 3
+    elif sAlphaType == 'diagonal':
+        iK = 2 + iKk
+    elif sAlphaType == 'lower triangular':
+        iK = 2 + 0.5*iKk*(iKk+1)
+    else:
+        print('Alpha type not correctly specified')
+        return 
+    iK = int(iK)
+    vTheta = np.zeros(iK)
+    
+    # New order: Lambda, Beta, Alpha
+    
+    vTheta[0] = np.log(4)
+    vTheta[1] = np.log(0.96/(1-0.96))
+    if sAlphaType != 'scalar':
+        vTheta[2:2+iKa] = np.log(np.sqrt(0.02))
+    else:
+        vTheta[2] = np.log(np.sqrt(0.02))
+        iKa = 1
+        
+    # vTheta = np.log(vTheta)
+    cReturnValue.x0 = vTheta
+    cReturnValue.tx0 = ParameterTransform(vTheta)
+
+    # do the optimization
+    tSol = opt.minimize(Objective, vTheta, method='BFGS', options={'disp': True, 'maxiter':250})
+    cReturnValue.success = tSol['success']
+
+    # check for success and store results
+    if (tSol['success'] != True):
+        print("*** no true convergence: ",tSol['message'])
+    else:
+        cReturnValue.x = tSol['x']
+        cReturnValue.tx = ParameterTransform(cReturnValue.x)
+        cReturnValue.likelihoodvalue = -iT * tSol['fun']
+        cReturnValue.criteria = CalculateCriteria(cReturnValue.likelihoodvalue)
+        cReturnValue.covariancematrix = ComputeCovarianceMatrix(cReturnValue.x)
+        # mJ = jacobian_2sided(ParameterTransform, cReturnValue.x, True)
+        mJ = jacobian_2sided(ParameterTransform, cReturnValue.x)
+        cReturnValue.tcovariancematrix = np.dot(mJ, np.dot(cReturnValue.covariancematrix, mJ.T))
+        cReturnValue.standarderrors = np.sqrt(np.diag(cReturnValue.covariancematrix))
+        cReturnValue.tstandarderrors = np.sqrt(np.diag(cReturnValue.tcovariancematrix))
+            
+    return cReturnValue
+
+###############################################
+### GenerateGarch()
+def EstMVGARCH(mData, iLen):
+    """
+    Purpose:
+        Estimate various GARCH models through maximum likelihood: for three
+        stocks, and for every stock with and without a delta factor.
+        
+    Inputs:
+        mReturn          iT x iNstocks x 2 matrix containing stock data for
+                         iNstocks per third dimension, where we have that [:,:,0]
+                         contains the test stocks and [:,:,1] contains the assignment
+                         stocks.
+        iLen             Integer, index at which to begin/end the series
+        iK               Integer, number of parameters
+        bTest            Boolean, ==True when test stocks should be used.
+    """
+        
+    cS = MaxLikelihoodGARCH_MV(mData[:iLen,:], 'scalar')
+    cD = MaxLikelihoodGARCH_MV(mData[:iLen,:], 'diagonal')
+    cLT = MaxLikelihoodGARCH_MV(mData[:iLen,:], 'lower triangular')
+    tClasses = (cS, cD, cLT)
+    
+    # Perform likelihoodratio test
+    iD = len(tClasses)
+    mLR = np.zeros((mData.shape[1],2))
+    
+    mLR[0,0] = 2 * (cS.likelihoodvalue - cD.likelihoodvalue)
+    mLR[1,0] = 2 * (cD.likelihoodvalue - cLT.likelihoodvalue)
+    mLR[2,0] = 2 * (cS.likelihoodvalue - cLT.likelihoodvalue)
+    
+    mLR[0,1] = sp.stats.chi2.ppf(0.95,df=2)
+    mLR[1,1] = sp.stats.chi2.ppf(0.95,df=3)
+    mLR[2,1] = sp.stats.chi2.ppf(0.95,df=5)
+    
+    
+    return cS, cD, cLT
+
+###############################################
+### AssetAllocation()
+def AssetAllocation(mData, tClasses, iLen, lAlphaType, vDates):
+    """
+    Purpose:
+        To compute the asset allocation decisions for the desired models.
+        The models are all stored in the tClasses tuple.
+        Additionally another equal proportion model is made to compare the results
+        Asset allocation decisions include:
+            Portfolio weights
+            Portfolio return
+            Portfolio variance
+            Diebold Mariano test statistic of the loss difference over the forecasting period of all pairwise models
+    Inputs:
+        mData           Matrix, with (demeaned) stock returns
+        tClasses        Tuple, with estimated multivariate GARCH classes
+        iLen            Starting value of the forecasting period
+        lAlphaType      List, different alpha types of the multivaraite GARCH classes
+    Returns:
+        mWeights        Matrix, Different portfolio weights for each model
+        mPReturn        Matrix, Portfolio returns of the different models
+        mPortVar        Matrix, Portfolio variance of the different models
+        DMStats         Matrix, containing the pairwise Diebold Mariano Test statistics
+    """
+    iModels = len(tClasses)
+    iT,iK = mData.shape
+    mWeights = np.zeros((iK, iT, iModels+1))
+    mWeights[:,iLen+1:,-1] = 1/ iK
+    mPReturn = np.zeros((iModels+1, iT))
+    
+    print("Starting estimation")
+    for model in range(iModels):
+        
+        vTheta = tClasses[model].tx
+        
+        dLambda = vTheta[0]
+        dBeta = vTheta[1]
+        if lAlphaType[model] == 'scalar':
+            iKa = 1
+        else:
+            iKa = iK
+        mAlpha = np.diag(vTheta[2:iKa+2])
+        if lAlphaType[model] == 'lower triangular':
+            for k, offdiag in enumerate(vTheta[iKa+2:]):
+                iL=k
+                for l in range(iL):
+                    mAlpha[k,l] = vTheta[1+iKa+k+l]
+        
+        if lAlphaType[model] == 'scalar':
+            mAlpha = mAlpha * np.eye(iK)
+
+
+        for t in range(iLen,iT-1):
+            # Set initial Sigma and Omega
+            mCov = (np.cov(mData[0:50,:].T, bias=True) * (dLambda-2)) / dLambda
+            # mCov = np.cov(mDataDM[0:50,:].T, bias=True)
+            mOmega = (np.cov(mData.T[:t], bias=True) * (dLambda-2)) / dLambda
+            # mOmega = np.cov(mDataDM.T, bias=True)
+            
+            
+            
+            # run the filter
+            mVar, vLikelihoodValues = GarchFilterMV(mData[:t], mOmega, mAlpha, dBeta, dLambda, mCov)
+            # Take the last value which is equal to the t + 1 forecast
+            mSigma2 = mVar[ : , : , -1]
+            mSigma2i = np.linalg.inv(mSigma2)
+            vOnes = np.ones(iK).reshape(-1,1)
+            mWeights[:,t+1,model] = ((mSigma2i @ vOnes) / (vOnes.T @ mSigma2i @ vOnes)).reshape(-1)
+            mPReturn[model,t+1] = mWeights[:,t+1,model].T @ mData[t+1] 
+            
+            if t % 100 == 0:
+                print('.')
+        
+            
+        print('Model',model,'complete.')
+    for t in range(iLen,iT-1):
+        mPReturn[-1,t+1] = mWeights[:,t+1,-1].T @ mData[t+1] 
+    print('Model 3 complete.')
+
+    mPortVar = np.var(mPReturn[:,iLen+1:], axis=1)
+    
+    # Calculate Diebold Mariano test statistics:
+    DMStats = DieboldMariano(mPReturn[:,iLen+1:])
+    
+    fig = plt.figure(figsize=(20,15))
+    lCompanies = ['MRK', 'AMZN', 'PEP']
+    ax = ['ax' + str(i) for i in range(1, len(lCompanies)+1)]
+    for j in range(1, 4):
+        ax[j-1] = fig.add_subplot(3, 1, j)
+        for i in range(len(lCompanies)): 
+            ax[j-1].plot(vDates[2501:], mWeights[i, 2501:, j-1].T, label = lCompanies[i])
+        ax[j-1].set_xlabel('Date')
+        ax[j-1].set_ylabel('Weights')
+        ax[j-1].set_title(lAlphaType[j-1])
+        plt.legend()
+    fig.tight_layout(pad=1.08)
+    plt.show()
+
+    return mWeights, mPReturn, mPortVar, DMStats
+
+###########################################################
+### ACF(mLogRet, iLags, mStats, boolAbs) = mAutoCORR
+def ACF(mLogRet, iLags, mStats, boolAbs):
+    """
+    Purpose:
+        Calculate an ACF for iLags amount of lags. The boolean input parameter
+        decides whether the absolute values of a series must be used.
+
+    Inputs:
+        mLogRet         matrix, filled with columns of log returns
+        iLags           integer, number of lags 
+        mStats          matrix, filled with stats about 3 log return columns
+        boolAbs         boolean, True when using absolute log returns and
+                        false otherwise
+                        
+    Return values:
+        mAutoCorr       iLags+1 x iK matrix, contains autocorrelations per column
+    """
+    iN, iK = mLogRet.shape
+    mAutoCov = np.zeros((iLags+1, iK))
+    mAutoCorr = np.zeros((iLags+1, iK))
+    
+    if boolAbs == True:
+         mLogRet = np.abs(mLogRet)     
+    vMean = np.mean(mLogRet, axis=0)
+    
+    for i in range(iK):
+        vDemeaned = mLogRet[:,i]-vMean[i]
+        for k in range(iLags+1):
+            mAutoCov[k,i] = (1/iN)*(vDemeaned.T[k:iN] @ vDemeaned[:iN-k])
+            mAutoCorr[k,i] = mAutoCov[k,i] / mAutoCov[0,i]
+
+    return mAutoCorr, mAutoCov
+
+###########################################################
+### PlotGraph(dfPrices)
+def DieboldMariano(mPReturn):
+    """
+    Purpose:  
+        Computing an iModels x iModels matrix of test statistics
+        for the Diebold-Mariano test, where we test whether there is significant
+        loss differential between two models.
+        
+    Inputs:
+        mPReturn      iModels x iT, containing portfolio returns
+        
+    Return values
+        mDMtest         (iModels x iModels) matrix of test statistics
+    """
+    iModels, iT = mPReturn.shape
+    mDMstats = np.zeros((iModels, iModels))    
+    iLags = round(iT**(1/3)+1)
+    for i in range(iModels):
+        for j in range(iModels):
+            vLD = (np.square(mPReturn[i,:]) - np.square(mPReturn[j,:])).reshape(-1,1)
+            dMean = np.mean(vLD)
+            vACorr, vACov = ACF(vLD, iLags, 0, False)
+            dDMdenom = np.sqrt((vACov[0] + np.sum(vACov[1:-2]))/iT)
+            mDMstats[i,j] = dMean / dDMdenom
+                            
+    return mDMstats
+
+###############################################
+### main()
+def main():
+    # Magic numbers
+    sDataTest = 'testdata.csv'
+    lOrderTest = [0, 2, 1]    
+    
+    sDataReal = 'realdata.csv'
+    lOrderReal = [1, 0, 2]
+    
+    lNamesCompT = ('AAPL', 'MSFT', 'CSCO')
+    lNamesCompR = ('MRK', 'AMZN', 'PEP')
+    lNamesModel = ('with Delta', 'without Delta')
+    lFormatT = (lNamesCompT, lNamesModel)
+    lFormatR = (lNamesCompR, lNamesModel)
+    # Initialisation
+    mReturn, lCompTestSort, lCompRealSort, vDates = Load_Data(sDataTest, sDataReal, lOrderTest, lOrderReal)
+    mReturn = mReturn*100
+
+    # Plot test - real
+    Graph_Return(mReturn[:,:,0], lCompTestSort, vDates)
+    Graph_Return(mReturn[:,:,1], lCompRealSort, vDates)
+    
+    # Descriptive stats test - real
+    mStatsTest = DescriptiveStats(mReturn[:,:,0], lCompTestSort)
+    mStatsReal = DescriptiveStats(mReturn[:,:,1], lCompRealSort)
+    
+    # Creating news impact curves
+    dOmega = 0
+    dAlpha = 0.05
+    dBeta = 0.9
+    vDelta = [0,1,0.2,0.4]
+    vLambda = [2,5,10,50]
+    dSigma2 = 1
+    dMu = 0
+    vE = np.arange(-3,3,0.1)
+    iLen = 2500
+    iK = 6
+    
+    ## APRIL 1st 2020 INDEX: 5093
+    iLenVaR = 5093
+    iNsim = 100000
+    lHvals = (1,5,10,20)
+    iH = 20
+    vAlphas = [0.01, 0.05, 0.1]
+
+    
+    # Testing GARCH
+    vXsim, vVarSim, vI, vEsim = GenerateGarch(10000, 0.05, 0.05, 0.9, 0.1, 5, 0.02, 1)
+    cTestDelta = MaxLikelihoodUGARCH(vXsim, 6)
+    cTestNoDelta = MaxLikelihoodUGARCH(vXsim, 6, False)
+    
+    NewsImpactCurve(dOmega, dAlpha, dBeta, vDelta, vLambda, dMu, dSigma2, vE)
+    
+    # Estimating univariate GARCH for test stocks
+    c1tD, c1tnD, c2tD, c2tnD, c3tD, c3tnD = EstUniGARCH(mReturn, iLen, iK, True)
+    #Estimating univariate GARCH for assignment stocks
+    c1rD, c1rnD, c2rD, c2rnD, c3rD, c3rnD = EstUniGARCH(mReturn, iLen, iK, False)
+    
+    # Stack in Tuples to give to function
+    tClassesTest = (c1tD, c1tnD, c2tD, c2tnD, c3tD, c3tnD)
+    tClassesReal = (c1rD, c1rnD, c2rD, c2rnD, c3rD, c3rnD)
+    
+    # Plots
+    NIC_FVplot(mReturn, tClassesTest, vDates, lFormatT, True, vE)
+    NIC_FVplot(mReturn, tClassesReal, vDates, lFormatR, False, vE)
+    
+    # VaR
+    mVaRtest = ValueAtRisk(mReturn, tClassesTest, iH, vAlphas, True, iLenVaR, iNsim, lHvals)
+    mVaRreal = ValueAtRisk(mReturn, tClassesReal, iH, vAlphas, False, iLenVaR, iNsim, lHvals)
+    
+    ## Testing MV GARCH
+    # Test parameters
+    iK = mReturn.shape[1]
+    iT = 10000
+    dLambda = 4
+    dBeta = 0.97
+    mCov1 = np.eye(iK) *3
+    mOmega = np.eye(iK) *3
+    mOmega = np.array([[9.0,3.0,4.5],
+                       [3.0,4.3,3.9],
+                       [4.5,3.9,10.0]])
+    mAlphaScalar = 0.1 * np.eye(iK)
+    mAlphaDiag = np.diag([0.01, 0.4, 0.7])
+    mAlphaLT = np.array([[0.01, 0, 0],[0.01, 0.04, 0], [0.02, 0.03, 0.07]])    
+    lAlphaType = ('scalar', 'diagonal', 'lower triangular')
+    
+    mDataSim, mVarSim = GenerateGarchMV(iT, iK, mOmega, mAlphaScalar, dBeta, dLambda, mCov1)
+    cReturnSimS = MaxLikelihoodGARCH_MV(mDataSim[50:,:], 'scalar')    
+        
+    # Demeaning the data for estimationg
+    mReturnDMtest = mReturn[:,:,0] - np.mean(mReturn[:,:,0], axis=0)
+    mReturnDMreal = mReturn[:,:,1] - np.mean(mReturn[:,:,1], axis=0)
+    
+    # Estimate Multi-variate GARCH
+    cTs, cTd, cTlt = EstMVGARCH(mReturnDMtest, iLen)
+    cRs, cRd, cRlt = EstMVGARCH(mReturnDMreal, iLen)
+    
+    # Stack in a tuple to give into function
+    tClassesTestMV = (cTs, cTd, cTlt)
+    tClassesRealMV = (cRs, cRd, cRlt)
+    
+    # Obtaining the asset allocation decisions
+    tAssetAllTest = AssetAllocation(mReturnDMtest, tClassesTestMV, iLen, lAlphaType, vDates)
+    tAssetAllreal = AssetAllocation(mReturnDMreal, tClassesRealMV, iLen, lAlphaType, vDates)
+     
+if __name__== "__main__":
+    main()
+    
