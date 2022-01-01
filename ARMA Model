@@ -1,24 +1,3 @@
-"""
-EQRM2a1.py
-
-Purpose:
-    Code for the first assignment of EQRM 2
-
-Version:
-    1       Starting on question 1
-    2       Working on log return plots and simulating data
-    3       Create discriptive statistics function
-    4       Create ACF plotst
-    10      Removes code for multivariate MLE (is still in v9)
-
-Date:
-    2021/11/09
-
-Author:
-    Dennis Cordes   2638370
-    Sander Tromp    2634741
-    Qingdong Wang   2721963
-"""
 ###########################################################
 ### Imports
 import numpy as np
@@ -34,7 +13,6 @@ from statsmodels.tsa.arima.model import ARIMA
 
 ### Get hessian and related functions
 from grad import *
-
 
 ###########################################################
 ### readData(sFileName)
