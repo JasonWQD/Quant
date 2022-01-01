@@ -1,0 +1,704 @@
+"""
+Purpose
+    We calculate a NW-kernel estimation and realized variances for Netflix and Tesla.
+    For NW, we use daily data and for RV we use intra-day data.
+"""
+###########################################################
+### Imports
+import numpy as np
+import pandas as pd
+import datetime as dt
+import matplotlib.pyplot as plt
+import datetime
+from matplotlib.pyplot import MultipleLocator
+
+###########################################################
+### Ku()
+def Ku(vZ):
+    """
+    Purpose:
+        Provide the uniform kernel
+
+    Inputs:
+        vZ      iN vector (or iN x iM matrix, whatever...)
+
+    Return value:
+        vK      iN vector (or whatever)
+    """
+    vK= np.zeros_like(vZ)
+    vK[np.fabs(vZ) <= 1]= 0.5
+
+    return vK
+
+###########################################################
+### get_Squareddata()
+def get_Squareddata(company1, company2):
+    """
+    Purpose:
+        Get the squared log returns of two companies
+
+    Inputs:
+        company1        string, name.csv of company 1
+        company2        string, name.csv of company 2
+
+    Return value:
+        dfrn2           n x 1, dataframe of squared log returns of company 1
+        dfrt2           n x 1, dataframe of squared log returns of company 2
+        Date            n x 1, dataframe of timepoints
+    """
+    dfrn2= pd.read_csv(company1,index_col="Date")
+    dfrn2= dfrn2[['Adj Close']]
+    
+    LR2= []
+    for i in range(1,len(dfrn2)):
+        LR2.append((np.log(dfrn2['Adj Close'][i]/dfrn2['Adj Close'][i-1]))**2)
+    dfrn2= dfrn2[1:]
+    dfrn2['Squared log_return']= LR2
+    dfrn2= dfrn2[['Squared log_return']]
+    
+    Date= pd.to_datetime(dfrn2.index)
+
+    dfrt2= pd.read_csv(company2,index_col="Date")
+    dfrt2= dfrt2[['Adj Close']]
+    
+    LR2= []
+    for i in range(1,len(dfrt2)):
+        LR2.append((np.log(dfrt2['Adj Close'][i]/dfrt2['Adj Close'][i-1]))**2)
+    dfrt2= dfrt2[1:]
+    dfrt2['Squared log_return']= LR2
+    dfrt2= dfrt2[['Squared log_return']]
+    
+    return dfrn2, dfrt2, Date
+
+###########################################################
+### get_data()
+def get_data(company1, company2):
+    """
+    Purpose:
+        Get the log returns of two companies
+
+    Inputs:
+        company1        string, name.csv of company 1
+        company2        string, name.csv of company 2
+
+    Return value:
+        dfrn2           n x 1, dataframe of log returns of company 1
+        dfrt2           n x 1, dataframe of log returns of company 2
+        Date            n x 1, dataframe of timepoints
+    """
+
+    dfrn= pd.read_csv(company1,index_col="Date")
+    dfrn= dfrn[['Adj Close']]
+    LR= []
+    for i in range(1,len(dfrn)):
+        LR.append(np.log(dfrn['Adj Close'][i]/dfrn['Adj Close'][i-1]))
+    dfrn= dfrn[1:]
+    dfrn['log_return']= LR
+    dfrn= dfrn[['log_return']]
+    #dfrn= dfrn[-60:]
+    Date= pd.to_datetime(dfrn.index)
+
+
+    dfrt= pd.read_csv(company2,index_col="Date")
+    dfrt= dfrt[['Adj Close']]
+    LR= []
+    for i in range(1,len(dfrt)):
+        LR.append(np.log(dfrt['Adj Close'][i]/dfrt['Adj Close'][i-1]))
+    dfrt= dfrt[1:]
+    dfrt['log_return']= LR
+    dfrt= dfrt[['log_return']]
+    
+    return dfrn, dfrt, Date
+
+###########################################################
+### KernRegr()
+def KernRegr(vY, dH, dfrn2, fnK= Ku):
+    """
+    Purpose:
+        Perform kernel regression
+
+    Inputs:
+        vY      iN vector of data
+        dH      double, bandwidth
+        fnK     (optional, default= Ku) function, kernel
+
+    Return values:
+        mV      Variances of Squared log returns
+    """
+    (iN, iK)= vY.shape # iN=692, iK=1
+    vYk= np.arange(iN)
+    vYe= np.arange(dH, iN-dH, 1)
+    iE=  len(vYe)
+    mV= np.zeros((iE))
+
+    for i in range(iE):
+        Period= dfrn2.values[i:2*dH+i]
+        Alpha= Period.mean()
+        dEvi= vY-Alpha
+        
+        vK= fnK((vYk - vYe[i])/dH)
+        mK= np.diag(vK)
+
+        variance= (dEvi.T@mK@dEvi)/(2*dH)
+        mV[i]= variance
+
+    return mV
+
+###########################################################
+### Cov()
+def Cov(get_Squareddata, dH,  company1, company2, fnK= Ku):
+    """
+    Purpose:
+        Obtaining the covariance between two companies
+
+    Inputs:
+        get_Squareddata     function
+        dH                  double, bandwidth
+        company1            string, name.csv of company 1
+        company2            string, name.csv of company 2
+        fnK                 (optional, default= Ku) function, kernel
+
+    Return values:
+        covariances         Vector of covariances
+    """
+
+    (dfrn2, dfrt2, Date)= get_Squareddata(company1, company2)
+    vYn= dfrn2.values
+    vYt= dfrt2.values
+    iN= vYn.shape[0] 
+    vYk= np.arange(iN)
+    vYe= np.arange(dH, iN-dH, 1)
+    iE=  len(vYe)
+    covariances= np.zeros((iE))
+
+    for i in range(iE):
+        Periodn= vYn[i:2*dH+i]
+        Periodt= vYt[i:2*dH+i]
+        AlphaN= Periodn.mean()
+        AlphaT= Periodt.mean()
+        
+        dEviN= vYn-AlphaN
+        dEviT= vYt-AlphaT
+        
+        vK= fnK((vYk - vYe[i])/dH)
+        mK= np.diag(vK)
+
+        covariance= (dEviN.T@mK@dEviT)/(2*dH)
+        covariances[i]= covariance
+
+    return covariances
+
+###########################################################
+### product()
+def product(get_data, company1, company2):
+    """
+    Purpose:
+        Obtaining the product of the returns
+
+    Inputs:
+        get_data            function
+        company1            string, name.csv of company 1
+        company2            string, name.csv of company 2
+
+    Return values:
+        Product             n x 1 vector of product of returns
+    """
+
+    (dfrn, dfrt)= get_data(company1, company2)[:2]
+    Product= np.zeros((len(dfrn)))
+    for i in range(len(dfrn)):
+        vP= dfrn.values[i]*dfrt.values[i]
+        Product[i]= vP
+    return Product
+
+###########################################################
+### Corr()
+def Corr(Cov, KernRegr, get_Squareddata, dH, company1, company2):
+    """
+    Purpose:
+        Calculating the correlation between the two stock returns
+
+    Inputs:
+        Cov                 function
+        KernRegr            function
+        get_Squareddata     function
+        dH                  double, bandwidth
+        company1            string, name.csv of company 1
+        company2            string, name.csv of company 2
+
+    Return values:
+        Correlations        vector of correlations
+        Date                vector of dates
+    """
+
+    (dfrn2, dfrt2, Date)= get_Squareddata(company1, company2)
+    vYn= dfrn2.values
+    vYt= dfrt2.values
+    a= Cov(get_Squareddata, dH,  company1, company2, fnK= Ku)
+    b= KernRegr(vYn, dH, dfrn2, fnK= Ku)
+    c= KernRegr(vYt, dH, dfrn2, fnK= Ku)
+    Correlations= np.zeros((vYn.shape[0]-2*dH))
+    for i in range(vYn.shape[0]-2*dH):
+        Correlations[i]=(a[i]/np.sqrt(b[i]*c[i]))
+        
+    return Correlations, Date
+
+###########################################################
+### main()
+def main():
+    company1= 'NFLX.csv'
+    company2= 'TSLA.csv'
+    dH= 15 
+    (dfrn2, dfrt2, Date)= get_Squareddata(company1, company2)
+    vYn= dfrn2.values
+    vYt= dfrt2.values
+
+    fig= plt.figure(figsize=(20,10))
+    ax1= fig.add_subplot(221)
+    ax2= fig.add_subplot(222)
+    ax5= fig.add_subplot(224)
+    ax4= fig.add_subplot(223)
+    # ax3= fig.add_subplot(225)
+
+
+    #Netflix variances of squared log returns
+    x= Date[dH:vYn.shape[0]-dH]
+    y= KernRegr(vYn, dH, dfrn2, fnK= Ku)
+    ax1.set_title("Variance of squared log-returns of Netflix")
+    ax1.plot(x, y, c="r", label="variances")
+    ax1.set_xlabel("Date")
+    ax1.set_ylabel("Variance")
+
+    #Tesla variances of squared log returns
+    x= Date[dH:vYt.shape[0]-dH]
+    y= KernRegr(vYt, dH, dfrt2, fnK= Ku)
+    ax2.set_title("Variance of squared log-returns of Tesla")
+    ax2.plot(x, y, c="b", label="variances")
+    ax2.set_xlabel("Date")
+    ax2.set_ylabel("Variance")
+
+    #Correlations of squared log returns
+    (Correlations, Date)= Corr(Cov, KernRegr, get_Squareddata, dH, company1, company2)
+    x= Date[dH:vYn.shape[0]-dH]
+    y= Correlations
+    ax5.set_title("Correlations of Squared Log Reurns")
+    ax5.plot(x, y, c="b", label="Correlations")
+    ax5.set_xlabel("Date")
+    ax5.set_ylabel("Correlations of Squared Log Reurns")
+
+    #Covariances of squared log returns
+    x= Date[dH:vYn.shape[0]-dH]
+    y= Cov(get_Squareddata, dH,  company1, company2, fnK= Ku)
+    ax4.set_title("Covariance of Squared Log Reurns")
+    ax4.plot(x, y, c="b", label="covariances")
+    ax4.set_xlabel("Date")
+    ax4.set_ylabel("Covariances of squared log returns")
+
+    # plt.legend()
+    plt.tight_layout(pad=1.08)
+    plt.show()
+    
+    ###########################################################
+    
+    # Daily Product of Log Returns
+    fig= plt.figure(figsize=(20,10))
+    ax1= fig.add_subplot(221)
+
+    x= Date
+    y= product(get_data, company1, company2)
+    ax1.set_title("Daily Product of Log Returns")
+    ax1.plot(x, y, c="r", label="Product")
+    ax1.set_xlabel("Date")
+    ax1.set_ylabel("Daily Product of Log Returns")
+    plt.tight_layout(pad=1.08)
+    plt.show()
+    
+
+
+###########################################################
+### start main
+if __name__ == "__main__":
+    main()
+
+###########################################################
+### RV()
+def RV(sFreq, company):
+    """
+    Purpose:
+        Calculating the realized volatility for a stock
+
+    Inputs:
+        sFreq               string, interval size
+        company             string, name.csv of company
+
+    Return values:
+        dfC                 Dataframe of squared returns of the interval
+        rV                  Realized variance
+    """
+
+    df= pd.read_csv(company, parse_dates=[['DATE', 'TIME_M']])
+    df.set_index(['DATE_TIME_M'], inplace=True)
+    vI= [type(sSuf) is float for sSuf in df['SYM_SUFFIX']]
+    #print ('Missing suffix: %i, non-missing suffix (hence to be dropped): %i' % (np.sum(vI), len(df) - np.sum(vI)))
+    df= df[vI]
+    # Select single exchange
+    srC= df['EX'].value_counts()
+    #print ("Finding the following counts of exchanges:\n", srC)
+    #print ("Most common: Exchange %s at %i/%i=%g" % (srC.index[0], srC[0], srC.sum(), srC[0]/srC.sum()))
+    df= df[df['EX'] == srC.index[0]]
+    df= df[['PRICE']]
+
+    lr2 = []
+    for i in range(1,len(df)):
+        lr2.append((np.log(df['PRICE'][i]/df['PRICE'][i-1]))**2)
+    df= df[1:]
+    df['Squared Log_return']= lr2
+    asTime= ['9:30', '16:00']
+    vT= pd.to_datetime(asTime, format='%H:%M').time     # Use only the time part of the datetime item
+    # Compare that time to the time of the index
+    vI= (df.index.time >= vT[0]) & (df.index.time <= vT[1])
+    df= df[vI] 
+    dfC= df['Squared Log_return'].resample(sFreq).last().dropna()
+    dfC= pd.DataFrame(dfC)
+    dfC= dfC[['Squared Log_return']]
+    
+    rV= dfC.resample('24H').sum()
+    rV= rV[rV['Squared Log_return']!=0].dropna() #Realized Variance
+    
+    return (dfC, rV)
+
+###########################################################
+### LogRet()
+def LogRet(sFreq, company):
+    """
+    Purpose:
+        Calculating a vector of log returns
+
+    Inputs:
+        sFreq               string, interval size
+        company             string, name.csv of company
+
+    Return values:
+        dfC                 Dataframe of log returns of the interval
+    """
+    df= pd.read_csv(company, parse_dates=[['DATE', 'TIME_M']])
+    df.set_index(['DATE_TIME_M'], inplace=True)
+    vI= [type(sSuf) is float for sSuf in df['SYM_SUFFIX']]
+    #print ('Missing suffix: %i, non-missing suffix (hence to be dropped): %i' % (np.sum(vI), len(df) - np.sum(vI)))
+    df= df[vI]
+    # Select single exchange
+    srC= df['EX'].value_counts()
+    #print ("Finding the following counts of exchanges:\n", srC)
+    #print ("Most common: Exchange %s at %i/%i=%g" % (srC.index[0], srC[0], srC.sum(), srC[0]/srC.sum()))
+    df= df[df['EX'] == srC.index[0]]
+    df= df[['PRICE']]
+    
+    vlr = []
+    for i in range(1,len(df)):
+        vlr.append((np.log(df['PRICE'][i]/df['PRICE'][i-1])))
+    
+    df= df[1:]
+    df['Log_return']= vlr
+    asTime= ['9:30', '16:00']
+    vT= pd.to_datetime(asTime, format='%H:%M').time     # Use only the time part of the datetime item
+    # Compare that time to the time of the index
+    vI= (df.index.time >= vT[0]) & (df.index.time <= vT[1])
+    df= df[vI] 
+    dfC= df['Log_return'].resample(sFreq).last().dropna()
+    dfC= pd.DataFrame(dfC)
+    dfC= dfC[['Log_return']]
+    
+    return dfC
+
+###########################################################
+### covProduct()
+def covProduct(vLR_a, vLR_b):
+    """
+    Purpose:
+        Calculating the covariance by multiplying the log-returns for the
+        intra-day observations, partitioned at time interval i
+
+    Inputs:
+        vLR_a               vector of log returns for company A
+        vLR_B               vector of log returns for company B
+
+    Return values:
+        vLRaLRb             vector of product of log returns
+    """
+
+    vLRaLRb = vLR_a * vLR_b
+    vLRaLRb= vLRaLRb.resample('24H').sum()
+    vLRaLRb= vLRaLRb[vLRaLRb['Log_return']!=0].dropna() #Realized Variance
+    vLRaLRb.columns = ['Covariance']
+        
+    return vLRaLRb
+
+###########################################################
+### get_SquareddataSept()
+def get_SquareddataSept(company1, company2):
+    """
+    Purpose:
+        Get the squared log returns of two companies in August 2020
+
+    Inputs:
+        company1        string, name.csv of company 1
+        company2        string, name.csv of company 2
+
+    Return value:
+        dfrn2           n x 1, dataframe of squared log returns of company 1
+        dfrt2           n x 1, dataframe of squared log returns of company 2
+        Date            n x 1, dataframe of timepoints
+    """
+
+    dfrn2= pd.read_csv(company1,index_col="Date")[383:436]
+    dfrn2= dfrn2[['Adj Close']]
+    LR2= []
+    for i in range(1,len(dfrn2)):
+        LR2.append((np.log(dfrn2['Adj Close'][i]/dfrn2['Adj Close'][i-1]))**2)
+    dfrn2= dfrn2[1:]
+    dfrn2['Squared log_return']= LR2
+    dfrn2= dfrn2[['Squared log_return']]
+    Date= pd.to_datetime(dfrn2.index)
+
+    dfrt2= pd.read_csv(company2,index_col="Date")[383:436]
+    dfrt2= dfrt2[['Adj Close']]
+    LR2= []
+    for i in range(1,len(dfrt2)):
+        LR2.append((np.log(dfrt2['Adj Close'][i]/dfrt2['Adj Close'][i-1]))**2)
+    dfrt2= dfrt2[1:]
+    dfrt2['Squared log_return']= LR2
+    dfrt2= dfrt2[['Squared log_return']]
+    
+    return dfrn2, dfrt2, Date
+
+###########################################################
+### main()
+def main():
+    company1= 'NFLX.csv'
+    company2= 'TSLA.csv'
+    dH= 3                       # Bandwidth
+
+    sFreq= '5Min'               # Time partitioning
+    companyn= 'Netflix stock price data.csv'
+    companyt= 'TSLA stock price data.csv'
+    (dfC_a, a)= RV(sFreq, companyn)
+    a.columns=[['Netflix RV']]
+    (dfC_b, b)= RV(sFreq, companyt)
+    b.columns=[['Tesla RV']]
+    
+    vLogRet_a = LogRet(sFreq, companyn)
+    vLogRet_b = LogRet(sFreq, companyt)
+
+    vCovRV_product = covProduct(vLogRet_a, vLogRet_b)
+
+    rvcc= pd.DataFrame(pd.concat([a,b], axis= 1))
+    rvcc['CovariancesR']= vCovRV_product.values
+    rvcc['CorrelationsR']= [
+        rvcc['CovariancesR'].values[i]/np.sqrt(rvcc['Netflix RV'].values[i]*rvcc['Tesla RV'].values[i]) for i in range(len(rvcc))
+    ]
+    
+    fig= plt.figure(figsize=(25,10))         # Plotting RVs, Rcov and Rcorr
+    ax1= fig.add_subplot(131)
+    plt.xticks(rotation=45,fontsize=15)
+    plt.yticks(fontsize=15)
+    ax2= fig.add_subplot(132)
+    plt.xticks(rotation=45,fontsize=15)
+    plt.yticks(fontsize=15)
+    ax3= fig.add_subplot(133)
+    plt.xticks(rotation=45,fontsize=15)
+    plt.yticks(fontsize=15)
+
+    x= rvcc.index                            # Realized Variances for Netflix and Tesla
+    y1= rvcc['Netflix RV']
+    y2= rvcc['Tesla RV']
+    ax1.set_title("RV",fontsize=20)
+    ax1.plot(x, y1, c="r", label="Netflix")
+    ax1.plot(x, y2, c="b", label="Tesla")
+    ax1.set_xlabel("Date",fontsize=20)
+    ax1.set_ylabel("Variances",fontsize=20)
+    ax1.legend()
+    
+    x= rvcc.index                            # Covariances of squared log returns
+    y= rvcc['CovariancesR']
+    ax2.set_title("Covariances",fontsize=20)
+    ax2.plot(x, y, c="r", label="covariances")
+    ax2.set_xlabel("Date",fontsize=20)
+    ax2.set_ylabel("Covariances",fontsize=20)
+    #ax2.legend()
+    
+    x= rvcc.index                            # Correlations of squared log returns
+    y= rvcc['CorrelationsR']
+    ax3.set_title("Correlations",fontsize=20)
+    ax3.plot(x, y, c="r", label="Correlations")
+    ax3.set_xlabel("Date",fontsize=20)
+    ax3.set_ylabel("Correlations",fontsize=20)
+    
+    #plt.legend()
+    plt.tight_layout(pad=1.08)
+    plt.show()
+
+    (dfrn2, dfrt2, Date)= get_SquareddataSept(company1, company2)
+    vYn= dfrn2.values
+    vYt= dfrt2.values
+
+    fig= plt.figure(figsize=(25,14))        # Comparing NW and RV
+    ax1= fig.add_subplot(221)
+    plt.xticks(rotation=45,fontsize=15)
+    plt.yticks(fontsize=15)
+    ax2= fig.add_subplot(222)
+    plt.xticks(rotation=45,fontsize=15)
+    plt.yticks(fontsize=15)
+    ax3= fig.add_subplot(223)
+    plt.xticks(rotation=45,fontsize=15)
+    plt.yticks(fontsize=15)
+    ax4= fig.add_subplot(224)
+    plt.xticks(rotation=45,fontsize=15)
+    plt.yticks(fontsize=15)
+
+    x= rvcc.index                           # NW-Var and RVar for Netflix
+    y= rvcc['Netflix RV']
+    x1= Date[dH:vYn.shape[0]-dH]
+    y1= KernRegr(vYn, dH, dfrn2, fnK= Ku)    
+    ax1.set_title("Netflix",fontsize=20)
+    ax1.plot(x, y, c="r", label="RV")
+    ax1.plot(x1, y1, c="b", label="NW")
+    ax1.set_xlabel("Date",fontsize=20)
+    ax1.set_ylabel("Variances",fontsize=20)
+    ax1.legend(loc = 0, prop = {'size':10})
+
+    x= rvcc.index                           # NW-Vars and RVar for Tesla
+    y= rvcc['Tesla RV']
+    ax2.set_title("Tesla", fontsize=20)
+    ax2.plot(x, y, c="r", label="RV")
+    x1= Date[dH:vYt.shape[0]-dH]
+    y1= KernRegr(vYt, dH, dfrt2, fnK= Ku)
+    ax2.plot(x1, y1, c="b", label="NW")
+    ax2.set_xlabel("Date")
+    ax2.set_ylabel("Variances")
+    ax2.legend()
+
+    x= rvcc.index                           # NW-CoVar and RCoVar
+    y= rvcc['CovariancesR']
+    ax3.set_title("Covariances",fontsize=20)
+    ax3.plot(x, y, c="r", label="RV")
+    x1= Date[dH:vYn.shape[0]-dH]
+    y1= Cov(get_SquareddataSept, dH, company1, company2, fnK= Ku)
+    ax3.plot(x1, y1, c="b", label="NW")
+    ax3.set_xlabel("Date",fontsize=20)
+    ax3.set_ylabel("Covariances",fontsize=20)
+    ax3.legend()
+    
+    x= rvcc.index                           # NW-Corr and RCorr
+    y= rvcc['CorrelationsR']
+    ax4.set_title("Correlations",fontsize=20)
+    ax4.plot(x, y, c="r", label="RV")
+    Correlations= Corr(Cov, KernRegr, get_SquareddataSept, dH, company1, company2)[0]
+    x1= Date[dH:vYn.shape[0]-dH]
+    y1= Correlations
+    ax4.plot(x1, y1, c="b", label="NW")
+    ax4.set_xlabel("Date",fontsize=20)
+    ax4.set_ylabel("Correlations",fontsize=20)
+    ax4.legend()
+
+    
+    plt.tight_layout(pad=1.08)
+    plt.show()
+
+
+
+###########################################################
+### start main
+if __name__ == "__main__":
+    main()
+    
+
+def collect(minutes, companyn, companyt, special_day, LogRet, covProduct):
+    """
+    Purpose:
+        Creating 3 plots of the realized variances, the covariance and the
+        correlation using intra-day data of two stocks
+        
+    Inputs:
+        Minutes         Integer, partitioning of intra-day data
+        companyn        string, name.csv of company n
+        companyt        string, name.csv of company t
+        special_day     string, date of 'special day'
+        LogRet          function
+        covProduct      function
+
+    Output:
+        A plot featuring 3 subplots
+    """
+
+    collection=[]
+    for i in minutes:
+        sFreq= str(i)+'Min'
+        a= RV(sFreq, companyn)[1]
+        a.columns=[['Netflix RV']]
+        b= RV(sFreq, companyt)[1]
+        b.columns=[['Tesla RV']]
+        RVCC= pd.DataFrame()
+        RVCC= pd.concat([a,b], axis= 1)
+        
+        vLogRet_a = LogRet(sFreq, companyn)
+        vLogRet_b = LogRet(sFreq, companyt)
+        vCovRV_product = covProduct(vLogRet_a, vLogRet_b)
+        
+        RVCC['CovariancesR']= vCovRV_product.values
+        RVCC['CorrelationsR']= [
+            RVCC['CovariancesR'].values[i]/np.sqrt(RVCC['Netflix RV'].values[i]*RVCC['Tesla RV'].values[i]) for i in range(len(RVCC))
+        ]
+        RVCC['CorrelationsR']=[i[0][0] for i in RVCC['CorrelationsR'].values]
+        collection.append(RVCC)
+        print("loop done for %i minute(s)" %i)
+    h= pd.concat([i[i.index==special_day] for i in collection],axis=0)
+    h.index= minutes
+    
+    fig= plt.figure(figsize=(25,10))
+    ax1= fig.add_subplot(131)                   # Realized variances
+    x= h.index
+    y1= h['Netflix RV']
+    y2= h['Tesla RV']
+    ax1.set_title("RV")
+    ax1.plot(x, y1, c="r", label="Netflix RV")
+    ax1.plot(x, y2, c="b", label="Tesla RV")
+    ax1.set_xlabel("Frequency")
+    ax1.set_ylabel("Realized Variances")
+    ax1.legend()
+
+    ax2= fig.add_subplot(132)                   # Realized Covariances
+    x= h.index
+    y= h['CovariancesR']
+    ax2.set_title("Covariances")
+    ax2.plot(x, y, c="r", label="Covariances")
+    ax2.set_xlabel("Frequency")
+    ax2.set_ylabel("Covariances")
+
+    ax3= fig.add_subplot(133)                   # Realized correlations
+    x= h.index
+    y= h['CorrelationsR']
+    ax3.set_title("Correlations")
+    ax3.plot(x, y, c="r", label="Correlations")
+    ax3.set_xlabel("Frequency")
+    ax3.set_ylabel("Correlations")
+
+
+    plt.show()
+    
+    return
+
+###########################################################
+### main()
+def main():
+    minutes= [1, 2, 3, 4, 5, 10, 15, 20, 25, 30, 45, 60, 120]
+    companyn= 'Netflix stock price data.csv'
+    companyt= 'TSLA stock price data.csv'
+    special_day= '2020-08-11'
+
+    collect(minutes, companyn, companyt, special_day, LogRet, covProduct)
+    return
+
+###########################################################
+### start main
+if __name__ == "__main__":
+    main()
