@@ -1,0 +1,176 @@
+"""
+Purpose:
+    Finite-Difference Methods for Option Pricing
+"""
+##################################################################
+### import
+import matplotlib.pyplot as plt
+import numpy as np
+from scipy.stats import norm
+from scipy.sparse import diags
+
+# The first function can be used to verify the value calculated in the second function
+###########################################################
+### Black_Scholes()
+def Black_Scholes(dS0, iK, dT, dRf, dSigma, bType):
+    """
+    Purpose:
+        Calculate option value with BS model 
+    Input:
+        dS0             Spot price
+        iK              Integer, strike price
+        dT              Time to maturity
+        dRf             Risk-free interest rate
+        dSigma          Standard deviation of price of underlying asset\
+        bType           Boolean, can be "call" or "put"
+    Return:
+        dCall_price     Value of call option under BS model 
+    """
+    d1 = (np.log(dS0/iK) + (dRf + 0.5 * dSigma**2) * dT) / (dSigma * np.sqrt(dT))
+    d2 = (np.log(dS0/iK) + (dRf - 0.5 * dSigma**2) * dT) / (dSigma * np.sqrt(dT))
+    dCall_price = (dS0 * norm.cdf(d1, 0.0, 1.0) - iK * np.exp(-dRf * dT) * norm.cdf(d2, 0.0, 1.0))
+    dPut_price = (iK * np.exp(-dRf * dT) * norm.cdf(-d2, 0.0, 1.0) - dS0 * norm.cdf(-d1, 0.0, 1.0))
+    if bType == 'call':
+        return dCall_price
+    else:
+        return dPut_price
+
+###########################################################
+### FTCS()
+def FTCS(dRf, dSigma, dT, iK, dS0, iXstep, iTstep, iInterval):
+    """
+    Purpose:
+        Using Finite-Difference (FD) scheme to calculate European call option price
+    Inputs:
+        dRf             Risk free rate 
+        dSigma          Volatility of stock prices
+        dT              Time to maturity 
+        iK              Integer, strike price
+        dS0             Initial stock price 
+        iXstep          Integer, how many units of log prices
+        iTstep          Integer, how many units of time 
+        iInterval       Integer, the variable controling log price interval
+    Return:
+        dPrice          Price of European call option
+    """
+    xmin = np.log(dS0 / iK) - iInterval
+    xmax = np.log(dS0 / iK) + iInterval
+    tau = dSigma ** 2 * dT / 2 / iTstep
+    dDeltaX = iInterval / iXstep
+    dDeltaT = dT / iTstep
+    q = (2 * dRf) / (dSigma ** 2)
+    dDeltaX = iInterval / iXstep
+    dDeltaT = dT / iTstep
+    
+    dB0 = 1 - dSigma**2 * dDeltaT / (dDeltaX**2) - dRf * dDeltaT
+    dB1 = (dRf - 0.5 * dSigma**2) * dDeltaT / (2 * dDeltaX) + 0.5 * dSigma**2 * dDeltaT / (dDeltaX**2)
+    dB2 = -(dRf - 0.5 * dSigma**2) * dDeltaT / (2 * dDeltaX) + 0.5 * dSigma**2 * dDeltaT / (dDeltaX**2)
+    
+    B = diags([dB0, dB1, dB2], [0, -1, 1], shape=(iXstep * 2 + 1, iXstep * 2 + 1)).toarray()
+    x = np.expand_dims(np.linspace(xmin, xmax, 2 * iXstep + 1), axis=1)
+    w = np.maximum(np.exp(x / 2) - np.exp(x / 2 * (-1)), 0)
+    vPrice = B @ w
+    dPrice = vPrice[iXstep] * iK * np.exp(0.5 * np.log(dS0 / iK) - tau * iTstep * (1 / 4 + q))
+    
+    return dPrice
+
+###########################################################
+### Crank_Nicolson()
+def Crank_Nicolson(dRf, dSigma, dT, iK, dS0, iXstep, iTstep, iInterval):
+    """
+    Purpose:
+        Using Crank-Nicolson to calculate European call option price
+    Inputs:
+        dRf             Risk free rate 
+        dSigma          Volatility of stock prices
+        dT              Time to maturity 
+        iK              Integer, strike price
+        dS0             Initial stock price 
+        iXstep          Integer, how many units of log prices
+        iTstep          Integer, how many units of time 
+        iInterval       Integer, the variable controling log price interval
+    Return:
+        dPrice          Price of European call option 
+    """
+    xmin = np.log(dS0 / iK) - iInterval
+    xmax = np.log(dS0 / iK) + iInterval
+    tau = dSigma ** 2 * dT / 2 / iTstep
+    dDeltaX = iInterval / iXstep
+    dDeltaT = dT / iTstep
+    q = (2 * dRf) / (dSigma ** 2)
+    
+    dA0 = 1 + 1/2 * dSigma**2 * dDeltaT / (dDeltaX**2)
+    dA1 = -(dRf - 0.5 * dSigma**2) * dDeltaT / (4 * dDeltaX) - 0.25 * dSigma**2 * dDeltaT / (dDeltaX**2)
+    dA2 = (dRf - 0.5 * dSigma**2) * dDeltaT / (4 * dDeltaX) - 0.25 * dSigma**2 * dDeltaT / (dDeltaX**2)
+    dB0 = 1 - 0.5 * dSigma**2 * dDeltaT / (dDeltaX**2) - dRf * dDeltaT
+    dB1 = (dRf - 0.5 * dSigma**2) * dDeltaT / (4 * dDeltaX) + 0.25 * dSigma**2 * dDeltaT / (dDeltaX**2)
+    dB2 = -(dRf - 0.5 * dSigma**2) * dDeltaT / (4 * dDeltaX) + 0.25 * dSigma**2 * dDeltaT / (dDeltaX**2)
+    
+    A = diags([dA0, dA1, dA2], [0, -1, 1], shape=(iXstep * 2 + 1, iXstep * 2 + 1)).toarray()
+    B = diags([dB0, dB1, dB2], [0, -1, 1], shape=(iXstep * 2 + 1, iXstep * 2 + 1)).toarray()
+    x = np.expand_dims(np.linspace(xmin, xmax, 2 * iXstep + 1), axis=1)
+    d = np.zeros_like(x)
+    w = np.maximum(np.exp(x / 2) - np.exp(x / 2 * (-1)), 0)
+    r1 = 0
+    r2 = lambda t: np.exp(1/2 * xmax + 1 / 4 * t)
+    
+    for i in range(iTstep - 1, -1, -1):
+        d[0] = r1
+        d[-1] = r2(-dA1 * i)
+        w = np.linalg.solve(A, np.matmul(B, w) + d)
+
+    dPrice = w[iXstep] * iK * np.exp(0.5 * np.log(dS0 / iK) - tau * iTstep * (1 / 4 + q))
+
+    return dPrice
+
+###########################################################
+### main()
+def main():
+    
+    bType = 'call'
+    iK = 110
+    iXstep = 100
+    iTstep = 100
+    iInterval = 50
+    dRf = 0.02
+    dSigma = 0.3
+    dT = 3
+    iStep = 1
+    dS0 = np.arange(0, 200, iStep)
+    #dS0 = 100
+    CN = np.zeros(len(dS0))
+    BS = np.zeros(len(dS0))
+    FD = np.zeros(len(dS0))
+    for i in range(len(dS0)):
+        CN[i] = round(Crank_Nicolson(dRf, dSigma, dT, iK, dS0[i], iXstep, iTstep, iInterval)[0],3)
+        BS[i] = round(Black_Scholes(dS0[i], iK, dT, dRf, dSigma, bType),3)
+        FD[i] = round(FTCS(dRf, dSigma, dT, iK, dS0[i], iXstep, iTstep, iInterval)[0],3)
+        print(dS0[i], CN[i], BS[i], FD[i])
+        
+    plt.plot(dS0, BS, label = 'BS')
+    plt.plot(dS0, CN, label = 'CN')
+    plt.plot(dS0, FD, label = 'FD')
+    plt.xlabel('Current stock price')
+    plt.ylabel('European call option price')
+    plt.legend()
+    plt.show()
+    
+    dDeltaBS = np.zeros(len(BS)-1)
+    dDeltaCN = np.zeros(len(CN)-1)
+    dDeltaFD = np.zeros(len(FD)-1)
+    for i in range(len(BS)-1):
+        dDeltaBS[i] = (BS[i+1] - BS[i])/1
+        dDeltaCN[i] = (CN[i+1] - CN[i])/1
+        dDeltaFD[i] = (FD[i+1] - FD[i])/1
+    plt.plot(dS0[:-1], dDeltaBS, label = 'BS')
+    plt.plot(dS0[:-1], dDeltaCN, label = 'CN')
+    plt.plot(dS0[:-1], dDeltaFD, label = 'FD')
+    plt.xlabel('Current stock price')
+    plt.ylabel('Delta of call option')
+    plt.legend()
+    plt.show()
+    
+    
+if __name__== "__main__":
+    main()
+    
