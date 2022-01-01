@@ -1,0 +1,489 @@
+##################################################################
+### import
+import matplotlib.pyplot as plt
+import numpy as np
+from scipy.stats import norm
+import scipy.optimize as so
+from random import gauss
+from scipy import stats
+##################################################################
+### SABR()
+def SABR(dF0, dSigma0, iT, dBeta, dRho, dAlpha, iPath, iStep, dRf, bGraph):
+    """
+    Purpose:
+        Simulate forward price and volatility under SABR model 
+    Input:
+        dF0             Forward Price
+        dSigma0         Starting value of sigma
+        iT              Integer, time to maturity
+        dBeta           Power of Forward rate that controls the skewness of return
+        dRho            Brownian motions W1 and W2 are correlated with correlation dRho
+        dAlpha          Volatility of volatility
+        iPath           Integer, amount of simulations
+        iStep           Integer, amount of steps 
+        dRf             Risk-free interest rate
+        bGraph          Boolean, controlling pictures
+    Return:
+        vF              Vector, series of forward prices 
+        vA              Vector, series of sigma
+        vS              Vector, series of underlying asset price
+    """
+    dt = iT/iStep
+    mCH = [[1.0, dRho],[dRho, 1]]
+    mL = np.linalg.cholesky(mCH)
+    vF = dF0 * np.ones((iStep+1, iPath))
+    vA = dSigma0 * np.ones((iStep+1, iPath))
+    vLogR = np.zeros((iStep, iPath))
+    for i in range(iStep):
+        mZH = np.random.normal(0, 1, size=(2,iPath))
+        Z = mL @ mZH
+        dF = vA[i,:] * np.power(vF[i,:],dBeta) * np.sqrt(dt) * Z[0,:]
+        vF[i+1,:] = vF[i,:] + dF
+        vF[i+1,:] = np.maximum(vF[i+1,:],0)
+        vLogR[i, :] = np.log(vF[i+1,:]) - np.log(vF[i,:])
+        dA = dAlpha * vA[i,:] * np.sqrt(dt) * Z[1,:]
+        vA[i+1,:] = np.maximum(vA[i,:] + dA, 0)
+    dSkewnessR = np.mean(stats.skew(vLogR))
+    dKurtosisR = np.mean(stats.kurtosis(vLogR))
+
+    if bGraph == 'True':
+        fig=plt.figure()
+        ax1=fig.add_subplot(131)
+        ax2=fig.add_subplot(132)
+        ax3=fig.add_subplot(133)
+        ax1.hist(vF[-1],bins=100)
+        ax1.set_xlabel('Forward Rates after one year')
+        ax1.set_ylabel('Frequencies')
+        
+        ax2.hist(vA[-1],bins=100)
+        ax2.set_xlabel('Sigma after one year')
+        ax2.set_ylabel('Frequencies')
+    
+        ax3.hist(vLogR[:, 0],bins=15)
+        ax3.set_xlabel('Log returns')
+        ax3.set_ylabel('Frequencies')
+        fig.tight_layout(pad=1.08)
+        plt.show()
+        
+        fig,(ax1,ax2)=plt.subplots(2,1,sharex=True,figsize=(15, 10))
+        ax1.plot(vF[:,1],'r',lw=2, label = 'Forward Price')  
+        ax1.set_xlabel('Time',fontsize=20)
+        ax1.set_ylabel('Price',fontsize=20)
+        ax2.plot(vA[:,:1],lw=2)  
+        ax2.set_xlabel('Time',fontsize=20)
+        ax2.set_ylabel('Sigma',fontsize=20)  
+        fig.tight_layout(pad=1.5)
+        ax1.legend()
+        plt.show()
+    else:
+        return vF, vA, vLogR, dSkewnessR, dKurtosisR
+    
+    return vF, vA, vLogR, dSkewnessR, dKurtosisR
+
+###########################################################
+### vanilla_option()
+def vanilla_option(dS, iK, iT, dRf, dSigma, sFlag):
+    """
+    Purpose:
+        Calculate option value with BS model 
+    Input:
+        dS              Spot price
+        iK:             Integer, strike price
+        iT              Integer, time to maturity
+        dRf             Risk-free interest rate
+        dSigma          Standard deviation of price of underlying asset\
+        sFlag           String, can be "call" or "put"
+    Return:
+        dCall_price     Value of call option under BS model 
+    """
+    d1 = (np.log(dS/iK) + (dRf + 0.5 * dSigma**2) * iT) / (dSigma * np.sqrt(iT))
+    d2 = (np.log(dS/iK) + (dRf - 0.5 * dSigma**2) * iT) / (dSigma * np.sqrt(iT))
+    dCall_price = (dS*norm.cdf(d1, 0.0, 1.0) - iK * np.exp(-dRf * iT) * norm.cdf(d2, 0.0, 1.0))
+    dPut_price = (iK * np.exp(-dRf * iT) * norm.cdf(-d2, 0.0, 1.0) - dS * norm.cdf(-d1, 0.0, 1.0))
+    if sFlag == 'call':
+        return dCall_price
+    else:
+        return dPut_price
+
+###########################################################
+### Option_Payoff()
+def Option_Payoff(sFlag, dS, iK):
+    """
+    Purpose:
+        Calculate payoff with respect to the type of option  
+    Input:
+        dS              Spot price
+        iK:             Integer, strike price
+        sFlag           String, can be "call" or "put"
+    Return:
+        payoff     
+    """
+    if sFlag == 'call':
+        return max(dS - iK, 0.0)
+    else:
+        return max(iK - dS, 0.0)
+
+###########################################################
+### Monte_Carlo()
+def Monte_Carlo(sFlag, dS0, dRf, iT, dSigma, iK, iSimulations):
+    """
+    Purpose:
+        Calculate price of option using GBM model
+    Input:
+        dS0             Starting value of underlying assets
+        dRf             Risk-free interest rate
+        iT              Integer, time to maturity
+        dSigma          Volatility of underlying asset 
+        iK              Integer, strike price
+        sFlag           String, can be "call" or "put"
+    Return:
+        dPrice          Price of option     
+    """
+    vPayoff = np.zeros(iSimulations)
+    discout = np.exp(-dRf * iT)
+    for i in range(iSimulations):
+        dS = dS0 * np.exp((dRf - 0.5 * dSigma ** 2) * iT + dSigma * np.sqrt(iT) * gauss(0.0, 1.0))
+        vPayoff[i] = Option_Payoff(sFlag, dS, iK)
+    dPrice = discout * np.mean(vPayoff)
+    
+    return dPrice
+
+###########################################################
+### Option_Price()
+def Option_Price(sFlag, vF, dRf, iT, iK):
+    """
+    Purpose:
+        Calculate payoff of options at the maturity date 
+    Input:
+        sFlag           String, the kind of option, in other words, put or call
+        vF              Vector, series of underlying asset price at the end of maturity 
+        dRf             Risk-free interest rate
+        iT              Integer, time to maturity
+        iK              Integer, strike price
+    Return:
+        dPrice          Call option price
+    """
+    if sFlag == 'call':
+        vPayoffs = np.maximum(vF[-1] - iK, 0)
+    else:
+        vPayoffs = np.maximum(iK - vF[-1], 0)
+    dDF = np.exp(-dRf * iT)
+    dPrice = dDF * np.mean(vPayoffs)
+    
+    return dPrice
+
+###########################################################
+### Implied_Volatility()
+def Implied_Volatility(dAlpha, dBeta, dRho, nu, dF, iK, iT, lAIO, vCallBS, vPutBS, dRf, bType):
+    """
+    Purpose:
+        Derive implied volatility from SABR model and BS model 
+    Input:
+        dAlpha          Starting value of sigma
+        dBeta           Power of Forward rate that controls the skewness of return
+        dRho            Brownian motions W1 and W2 are correlated with correlation dRho
+        nu              Volatility of volatility
+        dF              Starting value of forward rate 
+        iK              Integer, strike price
+        iT              Integer, time to maturity
+        lAIO            List, containing percentages which control the strikes
+        vCallBS         Vector, containing call option prices under BS model 
+        vPutBS          Vector, containing put option prices under BS model 
+        dRf             Risk-free interest rate
+        bType           Boolean, controling derive SABR implied volatility or BS implied volatility
+    Return:
+        VOL             SABR implied volatility
+        vIVBSC          Vector, containing BS call implied volatility
+        vIVBSP          Vector, containing BS put implied volatility
+    """
+    
+    if bType == 'SABR':
+        if iK <= 0:
+            VOL = 0
+            diff = 0
+        elif dF == iK:
+            V= (dF*iK)**(1-dBeta)
+            A = 1 + (((1-dBeta)**2*dAlpha**2)/(24*(V**2))+(dAlpha*dBeta*nu*dRho)/(4*V)+((nu**2)*(2-3*(dRho**2))/24))*iT
+            VOL = dAlpha * A / ((dF)**(1-dBeta))
+        elif dF != iK:
+            V = (dF*iK)**((1-dBeta)/2)
+            logFK = np.log(dF/iK)
+            z = (nu/dAlpha)*V*logFK
+            x = np.log((np.sqrt(1-2*dRho*z+z**2)+z-dRho)/(1-dRho))
+            A = 1 + (((1-dBeta)**2*dAlpha**2)/(24*(V**2))+(dAlpha*dBeta*nu*dRho)/(4*V)+((nu**2)*(2-3*(dRho**2))/24))*iT
+            B = 1+ (1/24)*(((1-dBeta)*logFK)**2) * (1/1920)*(((1-dBeta)*logFK)**4)
+            VOL = dAlpha * z * A / (V * B * x)
+            
+        return VOL
+    
+    if bType == 'BS':   
+        vIVBSC = np.zeros(len(lAIO))
+        vIVBSP = np.zeros(len(lAIO))
+        vStrike = np.zeros(len(lAIO))
+        for x in range(len(lAIO)):
+            iK = dF * (1 - lAIO[x]) 
+            vStrike[x] = iK
+            def f(r):
+                dSigma = r
+                return vanilla_option(dF, iK, iT, dRf, r, 'call') - vCallBS[x]
+            vIVBSC[x] = so.fsolve(f,0.2)
+            def f(r):
+                dSigma = r
+                return vanilla_option(dF, iK, iT, dRf, r, 'put') - vPutBS[x]
+            vIVBSP[x] = so.fsolve(f,0.2)
+        
+        return vIVBSC, vIVBSP
+    
+###########################################################
+### MV_Brownian_motion()
+def MV_Brownian_motion(dRf, dS10, dS20, dSigma1, dSigma2, dRho, iT, iPath, iK):
+    """
+    Purpose:
+        Generate bivariate Monte Carlo simulations
+    Input:
+        dRf             Risk-free interest rate
+        dS10            Starting price of stock 1
+        dS20            Starting price of stock 2
+        dSigma1         Sigma of stock 1
+        dSigma2         Sigma of stock 2
+        dRho            Correlation between two stocks
+        iT              Integer, time to maturity
+        iPath           Times of simulations 
+        iK              Integer, strike price of the spread
+    Return:
+        dValue          Value of the spread
+    """
+    mCH = [[1.0, dRho],[dRho, 1]]
+    mCholesky = np.linalg.cholesky(mCH)
+    mSN = np.random.normal(0, 1, size=(2,iPath))
+    mZ = mCholesky @ mSN
+    mS0 = np.array(([dS10, 0],[0, dS20]))
+    mSigma = np.array(([dSigma1, 0],[0, dSigma2]))
+    mRf = dRf * np.ones((2,1))
+    #vS1 = np.zeros(iPath)
+    #vS2 = np.zeros(iPath)
+    #for i in range(iPath):
+        #vS1[i] = dS10 * np.exp(((dRf - 0.5 * dSigma1 ** 2) * iT) + dSigma1 * np.sqrt(iT) * mZ[0,i])
+        #vS2[i] = dS20 * np.exp(((dRf - 0.5 * dSigma2 ** 2) * iT) + dSigma2 * np.sqrt(iT) * mZ[1,i])
+    mS = mS0 @ np.exp(((mRf - 0.5 * np.diag(mSigma ** 2).reshape(2,1)) * iT) + mSigma * np.sqrt(iT) @ mZ)
+    vPayoff = np.maximum(mS[0,:] - mS[1,:]- iK, 0)
+    #vPayoff = np.maximum(vS1 - vS2 - iK, 0)
+    
+    dValue = np.mean(vPayoff) * np.exp(-dRf * iT)
+    #dValue1 = np.mean(vPayoff1) * np.exp(-dRf * iT)
+    #np.mean(mS[0,:])
+
+    return dValue
+
+##################################################################
+### Portfolio_Variance()
+def Portfolio_Variance(dWeight1, dWeight2, dSigma1, dSigma2, dRho):
+    """
+    Purpose:
+        Calculate portfolio variance
+    Input:
+        dWeight1        Weight of stock 1 in portfolio
+        dWeight2        Weight of stock 2 in portfolio
+        dSigma1         Standard deviation of stock 1
+        dSigma2         Standard deviation of stock 2
+        dRho            Correlation between two stocks
+    Return:
+        call_price      Value of the call option 
+    """
+    
+    dPV = dWeight1**2 * dSigma1**2 + dWeight2**2 * dSigma2**2 + 2 * dWeight1 * dWeight2 * dRho * dSigma1 * dSigma2
+    
+    return dPV
+
+##################################################################
+### Bachelier()
+def Bachelier(dS, iK, dRf, dDiv, dSigma, iT, sFlag):
+    """
+    Purpose:
+        Calculate option prices with Bachelier model
+    Input:
+        dS              Spot price
+        iK              Integer, strike price
+        dRf             Risk-free interest rate
+        dDiv            Divident rate 
+        dSigma          Standard deviation of price of underlying asset
+        iT              Integer, time to maturity
+        sFlag           String, can be "call" or "put"
+    Return:
+        call_price      Value of the call option 
+    """
+    tmp1 = np.exp(-2 * dDiv * iT) - np.exp(-2 * dRf * iT)
+    dSigma_hat = dSigma * np.sqrt(tmp1/(2 * (dRf - dDiv)))
+    tmp2 = dS * np.exp(-dDiv * iT)- iK * np.exp(-dRf * iT)
+    d = tmp2 / dSigma_hat
+    call_price = tmp2 * stats.norm.cdf(d) + dSigma_hat * stats.norm.pdf(d)
+    
+    if sFlag =='call':
+        return call_price
+    else:
+        return call_price - tmp2
+    
+##################################################################
+### main()
+def main():
+    
+    #Question 1, SABR model
+    dRf = 0
+    dF0 = 1 
+    dSigma0 = 0.2   
+    iT = 1      
+    dBeta = 1  
+    dRho = -0.7 
+    dAlpha = 0.5 
+    iPath = 10000 
+    iStep = 252   
+    vF, vA, vLogR, dSkewnessR, dKurtosisR = SABR(dF0, dSigma0, iT, dBeta, dRho, dAlpha, iPath, iStep, dRf, 'True')
+    
+    #Question 2(a) 
+    #lAIO = [0.25, 0.1, 0, -0.1, -0.25]
+    lAIO = np.arange(0.99, -0.99, -0.01)
+    vCallSABR = np.zeros(len(lAIO))
+    vCallBS = np.zeros(len(lAIO))
+    
+    for i in range(len(lAIO)):
+        iK = dF0 * (1 - lAIO[i])
+        vF = SABR(dF0, dSigma0, iT, dBeta, dRho, dAlpha, iPath, iStep, dRf, 'False')[0]
+        vCallSABR[i] = Option_Price('call', vF, dRf, iT, iK)
+        vCallBS[i] = vanilla_option(dF0, iK, iT, dRf, dSigma0, 'call')
+        print(i)
+        
+    #Question 2(b)
+    vCallMC = np.zeros(len(lAIO))
+    vPutMC = np.zeros(len(lAIO))
+    vCallBS = np.zeros(len(lAIO))
+    vPutBS = np.zeros(len(lAIO))
+    vStrike = np.zeros(len(lAIO))
+    for i in range(len(lAIO)):
+        iK = dF0 * (1 - lAIO[i])
+        vStrike[i] = iK
+        vCallMC[i] = Monte_Carlo('call', dF0, dRf, iT, dSigma0, iK, iPath)
+        vPutMC[i] = Monte_Carlo('put', dF0, dRf, iT, dSigma0, iK, iPath)
+        vCallBS[i] = vanilla_option(dF0, iK, iT, dRf, dSigma0, 'call')
+        vPutBS[i] = vanilla_option(dF0, iK, iT, dRf, dSigma0, 'put')
+        print(i)
+    fig= plt.figure()
+    ax1= fig.add_subplot(211)
+    ax1.set_title("Call Option values")
+    ax1.plot(vStrike, vCallMC, c="r", label="MC")
+    ax1.plot(vStrike, vCallBS, c="g", label="BS")
+    ax1.set_xlabel("Strike Prices")
+    ax1.set_ylabel("Option Value")
+    ax2= fig.add_subplot(212)
+    ax2.set_title("Put Option values")
+    ax2.plot(vStrike, vPutMC, c="r", label="MC")
+    ax2.plot(vStrike, vPutBS, c="g", label="BS")
+    ax2.set_xlabel("Strike Prices")
+    ax2.set_ylabel("Option Value")
+    ax1.legend()
+    ax2.legend()
+    fig.tight_layout(pad=1.08)
+    plt.show()
+    
+    #Question 2(c)
+    dAlpha = 0.2
+    #dBeta = 1
+    dRho = -0.7
+    nu = 0.5
+    dF = 1
+    iT = 1
+    dRf = 0
+    #for nu in [0.3, 0.4, 0.5, 0.9]:
+    #for dAlpha in [0.2, 0.25, 0.3, 0.35]:
+    #for dF in [0.8, 1, 1.2, 1.4]:
+    for dBeta in [0.8, 1, 1.2, 1.4]:
+    #for dRho in [-0.7, -0.3, 0, 0.3, 0.7]:
+        vIVBSC = Implied_Volatility(dAlpha, dBeta, dRho, nu, dF, iK, iT, lAIO, vCallBS, vPutBS, dRf, 'BS')[0]
+        vIV = np.zeros(len(lAIO))
+        vStrike = np.zeros(len(lAIO))
+        for x in range(len(lAIO)):
+            iK = dF * (1 - round(lAIO[x],2))
+            vStrike[x] = iK
+            vIV[x] = Implied_Volatility(dAlpha, dBeta, dRho, nu, dF, iK, iT, lAIO, vCallBS, vPutBS, dRf, 'SABR')
+        plt.plot(vStrike, vIV, label = 'Beta={}'.format(dBeta))
+    plt.plot(vStrike, vIVBSC, label = 'BS')
+    plt.xlabel('Strike')
+    plt.ylabel('Implied Volatility')
+    plt.legend()
+    plt.show()
+        
+    #Question 3(a, b)
+    dRf = 0.02
+    dSigma1 = 0.3
+    dSigma2 = 0.3
+    iT = 1
+    iPath = 100000
+    dRho = 0
+    dS10 = 180
+    dS20= 160
+    iK = dS10 - dS20
+    MV_Brownian_motion(dRf, dS10, dS20, dSigma1, dSigma2, dRho, iT, iPath, iK)
+    vRho = np.arange(-0.99, 1, 0.01)
+    vValue = np.zeros(len(vRho))
+    for i in range(len(vRho)):
+        vValue[i] = MV_Brownian_motion(dRf, dS10, dS20, dSigma1, dSigma2, vRho[i], iT, iPath, iK)
+        print(i,vRho[i],vValue[i])
+    plt.plot(vRho, vValue)
+    plt.xlabel('Correlation')
+    plt.ylabel('Spread Price')
+    plt.show()
+    
+    #Question 3(c)
+    dWeight1 = 1
+    dWeight2 = -1
+    dSigma1 = 0.3
+    dSigma2 = 0.2
+    dRho = 0.3
+    dPV = Portfolio_Variance(dWeight1, dWeight2, dSigma1, dSigma2, dRho)
+    
+    #Question 3(d)
+    iS = dS10 - dS20 + 20
+    iK = dS10 - dS20
+    dSigma = np.sqrt(Portfolio_Variance(dWeight1, dWeight2, dSigma1, dSigma2, dRho))
+    sFlag = 'call'
+    dSpread = vanilla_option(iS, iK, iT, dRf, dSigma, sFlag)
+    
+    #Question 3(e)
+    dDiv = 0
+    iK = 20
+    dCall = Bachelier(iS, iK, dRf, dDiv, dSigma, iT, sFlag)
+    
+    #Question 3(f)
+    iPath = 10000
+    iT = 1
+    dRho = 0.3
+    dRf = 0.02
+    dSigma = np.sqrt(Portfolio_Variance(dWeight1, dWeight2, dSigma1, dSigma2, dRho))
+    iS = dS10 - dS20 + 20
+    iK = [dS10 - dS20 + 10 - i for i in range(20)]
+    sFlag = 'call'
+    vBSCall = np.zeros(len(iK))
+    vBachelierCall = np.zeros(len(iK))
+    vMCCall = np.zeros(len(iK))
+    for i in range(len(iK)):
+        vBSCall[i] = vanilla_option(iS, iK[i], iT, dRf, dSigma, sFlag)
+        vBachelierCall[i] = Bachelier(iS, iK[i], dRf, dDiv, dSigma, iT, sFlag)
+        vMCCall[i] = MV_Brownian_motion(dRf, dS10, dS20, dSigma1, dSigma2, dRho, iT, iPath, iK[i])
+    
+    fig,(ax1,ax2)=plt.subplots(2,1,figsize=(10,7))
+    ax1.plot(iK, vBSCall, label = 'BS')
+    ax1.plot(iK, vBachelierCall, label = 'Bachelier')
+    ax1.plot(iK, vMCCall, label = 'MC')
+    ax1.set_xlabel('Strike Price')
+    ax1.set_ylabel('Call option price')
+    ax2.plot(iK, vBSCall-vBachelierCall, label = 'BS - Bachelier')
+    ax2.plot(iK, vMCCall-vBSCall, label = 'MC - BS')
+    ax2.plot(iK, vMCCall-vBachelierCall, label = 'MC - Bachelier')
+    ax2.set_xlabel('Strike Price')
+    ax2.set_ylabel('Discrepancy')
+    fig.tight_layout(pad=1.5)
+    ax1.legend()
+    ax2.legend()
+    plt.show()
+    
+if __name__== "__main__":
+    main()
